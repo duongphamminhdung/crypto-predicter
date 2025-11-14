@@ -31,16 +31,20 @@ MODEL_DIR = "../model"  # Directory for saving/loading models and scalers
 TEST = True  # ⚠️ CHANGE THIS TO False FOR LIVE TRADING
 # ═══════════════════════════════════════════════════════════
 
-# ═══════════════════════════════════════════════════════════
-# ⚠️ FUTURES TRADING RISK CONFIGURATION
-# ═══════════════════════════════════════════════════════════
-# Futures trading uses leverage and is EXTREMELY risky!
-# Only trade with very high confidence to minimize risk
-CONFIDENCE_THRESHOLD_TRADE = 0.70  # Only trade when confidence > 70%
-CONFIDENCE_THRESHOLD_TEST = 0.70   # Trigger model testing when below 70%
-MAX_POSITION_RISK = 0.05           # Max 5% of balance at risk per trade (conservative for futures)
-MAX_LEVERAGE = 5                   # Maximum leverage to use (lower = safer)
-# ═══════════════════════════════════════════════════════════
+                                    # ═══════════════════════════════════════════════════════════
+                                    # ⚠️ FUTURES TRADING RISK CONFIGURATION
+                                    # ═══════════════════════════════════════════════════════════
+                                    # Futures trading uses leverage and is EXTREMELY risky!
+                                    # Only trade with very high confidence to minimize risk
+CONFIDENCE_THRESHOLD_TRADE  = 0.70  # Only trade when confidence > 70%
+CONFIDENCE_THRESHOLD_TEST   = 0.70  # Trigger model testing when below 70%
+MAX_POSITION_RISK           = 0.05  # Max 5% of balance at risk per trade (conservative for futures)
+MAX_LEVERAGE                = 5     # Maximum leverage to use (lower = safer)
+                                    # Early stop parameters
+EARLY_STOP_MAX_TIME_MINUTES = 30    # Close trade if it's been red for this long (minutes)
+EARLY_STOP_OPPOSITE_SIGNAL  = True  # Close losing trades if model predicts opposite signal
+                                    # Early stop triggers when BOTH conditions are met: time limit AND opposite signal
+                                    # ═══════════════════════════════════════════════════════════
 
 def setup_logging():
     """Configure logging to file and console."""
@@ -262,8 +266,22 @@ def main():
                 time.sleep(60)
                 continue
             
-            confidence = signal_probs.max().item()
+            confidence       = signal_probs.max().item()
             predicted_signal = signal.item()
+            
+            # Check for early stops on active trades (before processing new predictions)
+            # This allows us to use the predicted_signal to check for opposite signals
+            if trades_list:
+                for i, trade in enumerate(trades_list):
+                    if check_early_stop(trade, current_price, predicted_signal):
+                        trade_counter += 1
+                        trade_index = trade_counter
+                        pnl = print_trade_result(trade, current_price, result='LOSS', simulated=TEST, trade_index=trade_index, early_stop=True)
+                        if not TEST:
+                            update_stats(daily_stats, 'LOSS', pnl)
+                        trades_list.pop(i)
+                        logging.info("🛑 Trade closed due to early stop condition")
+                        break  # Only close one trade per cycle to avoid index issues
             
             # Use close_scaler for inverse transform of TP/SL
             try:
@@ -278,30 +296,27 @@ def main():
                 # Validate TP/SL direction based on signal
                 # For BUY: TP should be above entry, SL below entry
                 # For SELL: TP should be below entry, SL above entry
-                invalid_tp_sl = False
                 original_tp = tp
                 original_sl = sl
                 
                 if predicted_signal == 1:  # BUY
                     if tp <= current_price:
-                        logging.warning(f"⚠️ Skipping BUY trade: Invalid TP ${original_tp:.2f} <= Entry ${current_price:.2f}")
-                        invalid_tp_sl = True
+                        # Adjust TP to 5% above entry price
+                        tp = current_price * 1.05
+                        logging.warning(f"⚠️ Invalid TP for BUY: ${original_tp:.2f} <= Entry ${current_price:.2f}. Adjusted to ${tp:.2f} (5% above)")
                     if sl >= current_price:
-                        logging.warning(f"⚠️ Skipping BUY trade: Invalid SL ${original_sl:.2f} >= Entry ${current_price:.2f}")
-                        invalid_tp_sl = True
+                        # Adjust SL to 20% below entry price
+                        sl = current_price * 0.80
+                        logging.warning(f"⚠️ Invalid SL for BUY: ${original_sl:.2f} >= Entry ${current_price:.2f}. Adjusted to ${sl:.2f} (20% below)")
                 else:  # SELL
                     if tp >= current_price:
-                        logging.warning(f"⚠️ Skipping SELL trade: Invalid TP ${original_tp:.2f} >= Entry ${current_price:.2f}")
-                        invalid_tp_sl = True
+                        # Adjust TP to 5% below entry price
+                        tp = current_price * 0.95
+                        logging.warning(f"⚠️ Invalid TP for SELL: ${original_tp:.2f} >= Entry ${current_price:.2f}. Adjusted to ${tp:.2f} (5% below)")
                     if sl <= current_price:
-                        logging.warning(f"⚠️ Skipping SELL trade: Invalid SL ${original_sl:.2f} <= Entry ${current_price:.2f}")
-                        invalid_tp_sl = True
-                
-                # Skip this trade if TP/SL is invalid
-                if invalid_tp_sl:
-                    logging.info("⏭️  Skipping trade due to invalid TP/SL. Waiting for next prediction...")
-                    time.sleep(60)
-                    continue
+                        # Adjust SL to 20% above entry price
+                        sl = current_price * 1.20
+                        logging.warning(f"⚠️ Invalid SL for SELL: ${original_sl:.2f} <= Entry ${current_price:.2f}. Adjusted to ${sl:.2f} (20% above)")
             except Exception as e:
                 logging.error(f"Failed to calculate TP/SL: {e}", exc_info=True)
                 tp = current_price * 1.01
@@ -346,42 +361,42 @@ def main():
                     test_tp = current_price * 1.01
                     test_sl = current_price * 0.99
                 
-                # Validate test model TP/SL direction - skip if invalid
-                test_invalid_tp_sl = False
+                # Validate test model TP/SL direction - adjust TP/SL if invalid
                 if test_predicted_signal == 1:  # BUY
                     if test_tp <= current_price:
-                        test_invalid_tp_sl = True
+                        # Adjust TP to 5% above entry price
+                        test_tp = current_price * 1.05
                     if test_sl >= current_price:
-                        test_invalid_tp_sl = True
+                        # Adjust SL to 20% below entry price
+                        test_sl = current_price * 0.80
                 else:  # SELL
                     if test_tp >= current_price:
-                        test_invalid_tp_sl = True
+                        # Adjust TP to 5% below entry price
+                        test_tp = current_price * 0.95
                     if test_sl <= current_price:
-                        test_invalid_tp_sl = True
+                        # Adjust SL to 20% above entry price
+                        test_sl = current_price * 1.20
                 
-                if test_invalid_tp_sl:
-                    logging.warning("⚠️ Test model prediction has invalid TP/SL - skipping comparison")
-                    # Continue with current model prediction only
-                else:
-                    test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc = calculate_trade_amount(
-                        test_confidence, usdt_balance, current_price, test_sl
-                    )
-                    
-                    # Display test model prediction
-                    logging.info("\n" + "="*60)
-                    logging.info("🧪 TEST MODEL PREDICTION")
-                    logging.info("="*60)
-                    print_prediction(test_predicted_signal, test_confidence, test_tp, test_sl, 
-                                   test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc, usdt_balance)
-                    
-                    test_model_predictions.append({
-                        'signal': test_predicted_signal,
-                        'confidence': test_confidence,
-                        'entry_price': current_price,
-                        'tp': test_tp,
-                        'sl': test_sl,
-                        'timestamp': time.time()
-                    })
+                # Continue with test model comparison after adjustments
+                test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc = calculate_trade_amount(
+                    test_confidence, usdt_balance, current_price, test_sl
+                )
+                
+                # Display test model prediction
+                logging.info("\n" + "="*60)
+                logging.info("🧪 TEST MODEL PREDICTION")
+                logging.info("="*60)
+                print_prediction(test_predicted_signal, test_confidence, test_tp, test_sl, 
+                               test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc, usdt_balance)
+                
+                test_model_predictions.append({
+                    'signal': test_predicted_signal,
+                    'confidence': test_confidence,
+                    'entry_price': current_price,
+                    'tp': test_tp,
+                    'sl': test_sl,
+                    'timestamp': time.time()
+                })
 
             # Trading and Learning Logic - STRICT THRESHOLDS FOR FUTURES
             if testing_model:
@@ -676,7 +691,7 @@ def log_active_trades_to_file(trades_list, current_price, simulated=False):
     except Exception as e:
         logging.error(f"Error logging active trades to file: {e}", exc_info=True)
 
-def print_trade_result(trade, exit_price, result, simulated=False, trade_index=None):
+def print_trade_result(trade, exit_price, result, simulated=False, trade_index=None, early_stop=False):
     """Print detailed trade result summary"""
     duration = time.time() - trade['entry_time']
     duration_minutes = int(duration / 60)
@@ -696,9 +711,12 @@ def print_trade_result(trade, exit_price, result, simulated=False, trade_index=N
         log_trade_to_file(trade_index, trade, exit_price, result, actual_pnl_usdt, pnl_percentage, price_change_pct, duration_minutes, simulated)
     
     # Result emoji and color
-    if result      == 'PROFIT':
+    if result == 'PROFIT':
        emoji        = "✅"
        result_text  = "PROFIT (TP REACHED)"
+    elif early_stop:
+        emoji       = "🛑"
+        result_text = "LOSS (EARLY STOP)"
     else:
         emoji       = "❌"
         result_text = "LOSS (SL HIT)"
@@ -740,16 +758,16 @@ def execute_trade(signal, exchange, quantity, entry_price, tp, sl):
     
     # Return trade info for tracking
     return {
-        'signal': signal,
-        'entry_price': entry_price,
-        'tp': tp,
-        'sl': sl,
-        'side': side,
-        'entry_time': time.time(),
-        'quantity': quantity,
-        'trade_amount_usdt': trade_amount_usdt,
+        'signal'              : signal,
+        'entry_price'         : entry_price,
+        'tp'                  : tp,
+        'sl'                  : sl,
+        'side'                : side,
+        'entry_time'          : time.time(),
+        'quantity'            : quantity,
+        'trade_amount_usdt'   : trade_amount_usdt,
         'expected_profit_usdt': expected_profit_usdt,
-        'expected_loss_usdt': expected_loss_usdt
+        'expected_loss_usdt'  : expected_loss_usdt
     }
 
 def calculate_unrealized_pnl(trade, current_price):
@@ -758,7 +776,7 @@ def calculate_unrealized_pnl(trade, current_price):
         pnl_pct = ((current_price - trade['entry_price']) / trade['entry_price']) * 100
         pnl_usdt = trade['quantity'] * (current_price - trade['entry_price'])
     else:  # SELL trade
-        pnl_pct = ((trade['entry_price'] - current_price) / trade['entry_price']) * 100
+        pnl_pct  = ((trade['entry_price'] - current_price) / trade['entry_price']) * 100
         pnl_usdt = trade['quantity'] * (trade['entry_price'] - current_price)
     return pnl_pct, pnl_usdt
 
@@ -780,8 +798,42 @@ def is_trade_complete(trade, current_price):
     """Check if the trade reached take profit (successful completion)"""
     if trade['signal'] == 1:  # BUY trade
         return current_price >= trade['tp']
-    else:  # SELL trade
+    else:   # SELL trade
         return current_price <= trade['tp']
+
+def check_early_stop(trade, current_price, predicted_signal=None):
+    """
+    Check if trade should be early stopped based on:
+    1. Trade has been red (losing) for too long
+    3. Model is predicting opposite signal (if enabled)
+    
+    Early stop triggers when BOTH conditions 1 AND 3 are True.
+    """
+    pnl_pct, _ = calculate_unrealized_pnl(trade, current_price)
+    duration_minutes = (time.time() - trade['entry_time']) / 60
+    
+    # Check if trade is losing (red)
+    if pnl_pct >= 0:
+        return False  # Trade is green, no early stop
+    
+    # Condition 1: Trade has been red for too long
+    time_condition = duration_minutes >= EARLY_STOP_MAX_TIME_MINUTES
+    
+    # Condition 3: Model is predicting opposite signal (if enabled)
+    opposite_signal_condition = False
+    if EARLY_STOP_OPPOSITE_SIGNAL and predicted_signal is not None:
+        # Check if predicted signal is opposite to current trade
+        if trade['signal'] == 1 and predicted_signal == 0:  # BUY trade, model predicts SELL
+            opposite_signal_condition = True
+        elif trade['signal'] == 0 and predicted_signal == 1:  # SELL trade, model predicts BUY
+            opposite_signal_condition = True
+    
+    # Early stop only if BOTH conditions are True
+    if time_condition and opposite_signal_condition:
+        logging.warning(f"🛑 Early stop: Trade has been red for {duration_minutes:.1f} minutes AND model predicts opposite signal (loss: {pnl_pct:.2f}%)")
+        return True
+    
+    return False
 
 def should_adopt_new_model(current_predictions, test_predictions):
     """

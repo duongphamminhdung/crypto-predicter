@@ -44,10 +44,6 @@ print_header() {
 
   # Function to check if Python is installed
 check_python() {
-    # if ! command -v python3 &> /dev/null && ! command -v python &> /dev/null; then
-    #     print_error "Python is not installed. Please install Python 3.8 or higher."
-    #     exit 1
-    # fi
     
     # Use python3 if available, otherwise python
     if command -v python3 &> /dev/null; then
@@ -94,14 +90,14 @@ train_model() {
     print_info "  • Fetch 5000 minutes (~3.5 days) of BTC/USDT data"
     print_info "  • Calculate 22 technical indicators"
     print_info "  • Train LSTM model with 20 epochs"
-    print_info "  • Save model as btc_predicter_model.pth"
+    print_info "  • Save model as ../model/btc_predicter_model.pth"
     echo ""
     
     $PYTHON_CMD train.py
     
     if [ $? -eq 0 ]; then
         print_success "Model training completed successfully!"
-        print_success "Model saved as: btc_predicter_model.pth"
+        print_success "Model saved as: ../model/btc_predicter_model.pth"
     else
         print_error "Training failed. Please check the logs for errors."
         exit 1
@@ -114,8 +110,9 @@ start_bot() {
     
     check_python
     
-    # Check if model exists
-    if [ ! -f "btc_predicter_model.pth" ]; then
+    # Check if model exists in ../model directory
+    MODEL_DIR="../model"
+    if [ ! -f "$MODEL_DIR/btc_predicter_model.pth" ]; then
         print_warning "Model file not found!"
         print_info "You need to train the model first. Run: ./run.sh train"
         exit 1
@@ -151,7 +148,7 @@ clean() {
     print_header "Cleaning Up Generated Files"
     
     print_warning "This will delete:"
-    print_warning "  • Trained models (*.pth)"
+    print_warning "  • Trained models (*.pth) in ../model/"
     print_warning "  • Training data (*.csv)"
     print_warning "  • Scaler files (*.gz)"
     print_warning "  • Log files (*.log)"
@@ -162,9 +159,9 @@ clean() {
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         print_info "Removing files..."
-        rm -f *.pth
+        rm -f ../model/*.pth
+        rm -f ../model/*.gz
         rm -f *.csv
-        rm -f *.gz
         rm -f *.log
         rm -f trading_stats.json
         print_success "Cleanup completed!"
