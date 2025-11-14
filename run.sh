@@ -21,25 +21,25 @@ NC='\033[0m' # No Color
 
 # Function to print colored messages
 print_info() {
-    echo -e "${BLUE}ℹ️  $1${NC}"
+    printf "${BLUE}ℹ️  $1${NC}\n"
 }
 
 print_success() {
-    echo -e "${GREEN}✅ $1${NC}"
+    printf "${GREEN}✅ $1${NC}\n"
 }
 
 print_warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
+    printf "${YELLOW}⚠️  $1${NC}\n"
 }
 
 print_error() {
-    echo -e "${RED}❌ $1${NC}"
+    printf "${RED}❌ $1${NC}\n"
 }
 
 print_header() {
-    echo -e "\n${BLUE}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}  $1${NC}"
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}\n"
+    printf "\n${BLUE}═══════════════════════════════════════════════════════════${NC}\n"
+    printf "${BLUE}  $1${NC}\n"
+    printf "${BLUE}═══════════════════════════════════════════════════════════${NC}\n\n"
 }
 
   # Function to check if Python is installed
