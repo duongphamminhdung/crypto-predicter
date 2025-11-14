@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Model files
+*.h5
+*.pth
+
+# Scaler files
+*.gz
+
+# Data files
+*.csv
+
+# Log files
+*.log
+
+# Statistics files
+trading_stats.json
+trades_log.json
+
+# Environment variables
+.env
+
+# Configuration files
+config.api
+trading_bot_live.txt

@@ -1,0 +1,7 @@
+requests
+pandas
+scikit-learn
+torch
+python-dotenv
+joblib
+numpy<2.0.0
