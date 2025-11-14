@@ -7,7 +7,13 @@ import pandas as pd
 import os
 import sys
 
+# Model directory for saving/loading models and scalers
+MODEL_DIR = "../model"
+
 def main():
+    # Create model directory if it doesn't exist
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    print(f"📁 Model directory: {os.path.abspath(MODEL_DIR)}")
     # Check if we're in test mode
     test_mode = '--test-mode' in sys.argv
     
@@ -92,7 +98,7 @@ def main():
         
         # MEXC Futures API returns up to 2000 records per request
         all_data = []
-        total_to_fetch = 50000  # Use 500000 lines for initial training
+        total_to_fetch = 70000  # Use 500000 lines for initial training
         
         # Calculate batches needed (2000 records per batch)
         batches_needed = (total_to_fetch + 1999) // 2000  # Ceiling division
@@ -168,41 +174,45 @@ def main():
     if is_fine_tuning:
         # Fine-tuning: Load existing model and continue training with latest historical data
         print("🔧 Fine-tuning mode: Loading existing model...")
-        if os.path.exists('btc_predicter_model.pth'):
-            predicter.load_model('btc_predicter_model.pth')
+        model_path = os.path.join(MODEL_DIR, 'btc_predicter_model.pth')
+        if os.path.exists(model_path):
+            predicter.load_model(model_path)
             print("✅ Existing model loaded successfully.")
         else:
             print("⚠️  Warning: No existing model found. Training from scratch.")
         
         print("🎯 Fine-tuning with latest historical data (time-weighted)...")
         # 40 epochs for fine-tuning, with time weighting, lower learning rate
-        predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, epochs=40, lr=0.0001, time_weighted=True)
+        predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, epochs=50, lr=0.0001, time_weighted=True)
         print("✅ Fine-tuning complete.")
     else:
         # Initial training from scratch
         print("🏗️  Training model from scratch...")
-        predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, epochs=100, lr=0.001, time_weighted=False)
+        predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, epochs=150, lr=0.0005, time_weighted=False)
         print("✅ Model training complete.")
 
     # Save the trained model and the scaler
     if test_mode:
-        model_file = 'btc_predicter_model_test.pth'
+        model_file = os.path.join(MODEL_DIR, 'btc_predicter_model_test.pth')
         print("Test mode: Saving model to separate file for testing...")
     else:
-        model_file = 'btc_predicter_model.pth'
+        model_file = os.path.join(MODEL_DIR, 'btc_predicter_model.pth')
     
     predicter.save_model(model_file)
-    joblib.dump(processor.scaler, 'scaler.gz')
+    scaler_file = os.path.join(MODEL_DIR, 'scaler.gz')
+    close_scaler_file = os.path.join(MODEL_DIR, 'close_scaler.gz')
+    
+    joblib.dump(processor.scaler, scaler_file)
     
     # Also save the close_scaler for TP/SL inverse transform
     if hasattr(processor, 'close_scaler'):
-        joblib.dump(processor.close_scaler, 'close_scaler.gz')
+        joblib.dump(processor.close_scaler, close_scaler_file)
         print(f"✅ Model saved to {model_file}")
-        print("✅ Feature scaler saved to scaler.gz")
-        print("✅ Close scaler saved to close_scaler.gz")
+        print(f"✅ Feature scaler saved to {scaler_file}")
+        print(f"✅ Close scaler saved to {close_scaler_file}")
     else:
         print(f"✅ Model saved to {model_file}")
-        print("✅ Scaler saved to scaler.gz")
+        print(f"✅ Scaler saved to {scaler_file}")
 
 if __name__ == '__main__':
     main()

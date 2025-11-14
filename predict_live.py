@@ -12,6 +12,7 @@ from datetime import datetime
 import json
 import os
 import sys
+import shutil
 
 # ═══════════════════════════════════════════════════════════
 # 📝 LOGGING & STATS CONFIGURATION
@@ -19,6 +20,7 @@ import sys
 LOG_FILE = "trading_bot.log"
 STATS_FILE = "trading_stats.json"
 TRADES_LOG_FILE = "trades_log.json"  # Separate file for individual trade logs
+MODEL_DIR = "../model"  # Directory for saving/loading models and scalers
 # ═══════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════
@@ -118,28 +120,33 @@ def main():
                     test_model_predictions = []
             
             # Load the current production model
-            model.load_model('btc_predicter_model.pth')
+            model_path = os.path.join(MODEL_DIR, 'btc_predicter_model.pth')
+            scaler_path = os.path.join(MODEL_DIR, 'scaler.gz')
+            close_scaler_path = os.path.join(MODEL_DIR, 'close_scaler.gz')
+            
+            model.load_model(model_path)
             model.eval()
-            scaler = joblib.load('scaler.gz')
+            scaler = joblib.load(scaler_path)
             
             # Load close_scaler for TP/SL inverse transform
-            if os.path.exists('close_scaler.gz'):
-                close_scaler = joblib.load('close_scaler.gz')
+            if os.path.exists(close_scaler_path):
+                close_scaler = joblib.load(close_scaler_path)
             else:
                 close_scaler = None
-                logging.warning("close_scaler.gz not found. TP/SL predictions may be inaccurate.")
+                logging.warning(f"{close_scaler_path} not found. TP/SL predictions may be inaccurate.")
             
             if testing_model:
                 # Also load the test model for comparison
-                test_model.load_model('btc_predicter_model_test.pth')
+                test_model_path = os.path.join(MODEL_DIR, 'btc_predicter_model_test.pth')
+                test_model.load_model(test_model_path)
                 test_model.eval()
                 elapsed_time = time.time() - testing_start_time
                 remaining_min = int((testing_duration - elapsed_time) / 60)
                 remaining_sec = int((testing_duration - elapsed_time) % 60)
                 logging.info(f"\n🧪 TESTING MODE - Comparing both models ({remaining_min}m {remaining_sec}s remaining)")
-                logging.info(f"   Current: btc_predicter_model.pth | Test: btc_predicter_model_test.pth")
+                logging.info(f"   Current: {model_path} | Test: {test_model_path}")
             else:
-                logging.info(f"\nModel loaded: btc_predicter_model.pth")
+                logging.info(f"\nModel loaded: {model_path}")
 
             # Fetch data for prediction - need extra for technical indicators
             # Futures API returns up to 2000 records, so we can get all we need in one request
@@ -198,13 +205,14 @@ def main():
             if trades_list:
                 mode_label = "🧪 SIMULATED Trades" if TEST else "📊 Active Trades"
                 logging.info(f"\n{mode_label}: {len(trades_list)}")
-                for i, trade in enumerate(trades_list, 1):
-                    pnl_pct = calculate_unrealized_pnl(trade, current_price)
+                for i, trade in enumerate(trades_list, 1): 
+                    pnl_pct, pnl_usdt = calculate_unrealized_pnl(trade, current_price)
                     status_emoji = "🟢" if pnl_pct > 0 else "🔴"
-                    logging.info(f"   {status_emoji} Trade #{i}: {trade['side']} | Entry: ${trade['entry_price']:.2f} | Unrealized P&L: {pnl_pct:+.2f}%")
+                    logging.info(f"   {status_emoji} Trade #{i}: {trade['side']} | Entry: ${trade['entry_price']:.2f} | "
+                               f"Unrealized P&L: {pnl_pct:+.2f}% (${pnl_usdt:+.2f})")
                 
-                # Log active trades to JSON file
-                log_active_trades_to_file(trades_list, current_price, simulated=TEST)
+                                                                                                                                                                                                                                                                                                                                                # Note: Active trades are displayed above but not logged to JSON
+                                                                                                                                                                                                                                                                                                                                                # Only closed trades are logged to trades_log.json with simplified structure
             
             # Prediction logic for current model
             # Calculate technical indicators from raw OHLCV data
@@ -268,26 +276,32 @@ def main():
                     sl = current_price * 0.99
                 
                 # Validate TP/SL direction based on signal
-                # For BUY: TP should be above entry, SL 20% below entry
-                # For SELL: TP should be below entry, SL 20% above entry
+                # For BUY: TP should be above entry, SL below entry
+                # For SELL: TP should be below entry, SL above entry
+                invalid_tp_sl = False
+                original_tp = tp
+                original_sl = sl
+                
                 if predicted_signal == 1:  # BUY
                     if tp <= current_price:
-                        # TP is below/equal to entry - fix it
-                        tp = current_price * 1.02  # 2% above entry
-                        logging.warning(f"⚠️ Invalid TP for BUY (TP=${tp:.2f} <= Entry=${current_price:.2f}). Adjusted to ${tp:.2f}")
+                        logging.warning(f"⚠️ Skipping BUY trade: Invalid TP ${original_tp:.2f} <= Entry ${current_price:.2f}")
+                        invalid_tp_sl = True
                     if sl >= current_price:
-                        # SL is above/equal to entry - fix it to 20% below
-                        sl = current_price * 0.80  # 20% below entry
-                        logging.warning(f"⚠️ Invalid SL for BUY (SL=${sl:.2f} >= Entry=${current_price:.2f}). Adjusted to ${sl:.2f} (20% below)")
+                        logging.warning(f"⚠️ Skipping BUY trade: Invalid SL ${original_sl:.2f} >= Entry ${current_price:.2f}")
+                        invalid_tp_sl = True
                 else:  # SELL
                     if tp >= current_price:
-                        # TP is above/equal to entry - fix it
-                        tp = current_price * 0.98  # 2% below entry
-                        logging.warning(f"⚠️ Invalid TP for SELL (TP=${tp:.2f} >= Entry=${current_price:.2f}). Adjusted to ${tp:.2f}")
+                        logging.warning(f"⚠️ Skipping SELL trade: Invalid TP ${original_tp:.2f} >= Entry ${current_price:.2f}")
+                        invalid_tp_sl = True
                     if sl <= current_price:
-                        # SL is below/equal to entry - fix it to 20% above
-                        sl = current_price * 1.20  # 20% above entry
-                        logging.warning(f"⚠️ Invalid SL for SELL (SL=${sl:.2f} <= Entry=${current_price:.2f}). Adjusted to ${sl:.2f} (20% above)")
+                        logging.warning(f"⚠️ Skipping SELL trade: Invalid SL ${original_sl:.2f} <= Entry ${current_price:.2f}")
+                        invalid_tp_sl = True
+                
+                # Skip this trade if TP/SL is invalid
+                if invalid_tp_sl:
+                    logging.info("⏭️  Skipping trade due to invalid TP/SL. Waiting for next prediction...")
+                    time.sleep(60)
+                    continue
             except Exception as e:
                 logging.error(f"Failed to calculate TP/SL: {e}", exc_info=True)
                 tp = current_price * 1.01
@@ -332,37 +346,42 @@ def main():
                     test_tp = current_price * 1.01
                     test_sl = current_price * 0.99
                 
-                # Validate test model TP/SL direction
+                # Validate test model TP/SL direction - skip if invalid
+                test_invalid_tp_sl = False
                 if test_predicted_signal == 1:  # BUY
                     if test_tp <= current_price:
-                        test_tp = current_price * 1.02
+                        test_invalid_tp_sl = True
                     if test_sl >= current_price:
-                        test_sl = current_price * 0.80  # 20% below entry
+                        test_invalid_tp_sl = True
                 else:  # SELL
                     if test_tp >= current_price:
-                        test_tp = current_price * 0.98
+                        test_invalid_tp_sl = True
                     if test_sl <= current_price:
-                        test_sl = current_price * 1.20  # 20% above entry
+                        test_invalid_tp_sl = True
                 
-                test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc = calculate_trade_amount(
-                    test_confidence, usdt_balance, current_price, test_sl
-                )
-                
-                # Display test model prediction
-                logging.info("\n" + "="*60)
-                logging.info("🧪 TEST MODEL PREDICTION")
-                logging.info("="*60)
-                print_prediction(test_predicted_signal, test_confidence, test_tp, test_sl, 
-                               test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc, usdt_balance)
-                
-                test_model_predictions.append({
-                    'signal': test_predicted_signal,
-                    'confidence': test_confidence,
-                    'entry_price': current_price,
-                    'tp': test_tp,
-                    'sl': test_sl,
-                    'timestamp': time.time()
-                })
+                if test_invalid_tp_sl:
+                    logging.warning("⚠️ Test model prediction has invalid TP/SL - skipping comparison")
+                    # Continue with current model prediction only
+                else:
+                    test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc = calculate_trade_amount(
+                        test_confidence, usdt_balance, current_price, test_sl
+                    )
+                    
+                    # Display test model prediction
+                    logging.info("\n" + "="*60)
+                    logging.info("🧪 TEST MODEL PREDICTION")
+                    logging.info("="*60)
+                    print_prediction(test_predicted_signal, test_confidence, test_tp, test_sl, 
+                                   test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc, usdt_balance)
+                    
+                    test_model_predictions.append({
+                        'signal': test_predicted_signal,
+                        'confidence': test_confidence,
+                        'entry_price': current_price,
+                        'tp': test_tp,
+                        'sl': test_sl,
+                        'timestamp': time.time()
+                    })
 
             # Trading and Learning Logic - STRICT THRESHOLDS FOR FUTURES
             if testing_model:
@@ -553,31 +572,20 @@ def log_trade_to_file(trade_index, trade, exit_price, result, actual_pnl_usdt, p
             logging.warning(f"⚠️ {TRADES_LOG_FILE} format invalid. Starting fresh.")
             trades_log = []
         
-        # Remove any ACTIVE entry for this trade first
+        # Remove any ACTIVE entry for this trade first (using old or new field names)
         trades_log = [t for t in trades_log if 
                      not (t.get('status') == 'ACTIVE' and 
-                          abs(t.get('entry_price', 0) - float(trade['entry_price'])) < 0.01)]
+                          (abs(t.get('entry_price', 0) - float(trade['entry_price'])) < 0.01 or
+                           abs(t.get('entry price', 0) - float(trade['entry_price'])) < 0.01))]
         
-        # Create trade log entry
+        # Create trade log entry with simplified structure
         trade_entry = {
-            'trade_index': trade_index,
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'status': 'CLOSED',
-            'simulated': simulated,
-            'result': result,
-            'side': trade['side'],
-            'entry_price': float(trade['entry_price']),
-            'exit_price': float(exit_price),
-            'take_profit': float(trade['tp']),
-            'stop_loss': float(trade['sl']),
-            'quantity_btc': float(trade['quantity']),
-            'trade_amount_usdt': float(trade['trade_amount_usdt']),
-            'profit_loss_usdt': float(actual_pnl_usdt),
-            'profit_loss_percentage': float(pnl_percentage),
-            'price_change_percentage': float(price_change_pct),
-            'duration_minutes': int(duration_minutes),
-            'expected_profit_usdt': float(trade.get('expected_profit_usdt', 0)),
-            'expected_loss_usdt': float(trade.get('expected_loss_usdt', 0))
+            'index': trade_index,
+            'time_stamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'Profit/loss': result,  # 'PROFIT' or 'LOSS'
+            'PL percentage': float(pnl_percentage),
+            'PL in $': float(actual_pnl_usdt),
+            'entry price': float(trade['entry_price'])
         }
         
         # Append to log
@@ -612,15 +620,9 @@ def log_active_trades_to_file(trades_list, current_price, simulated=False):
         
         # Update or add active trades
         for i, trade in enumerate(trades_list, 1):
-            pnl_pct = calculate_unrealized_pnl(trade, current_price)
+            pnl_pct, unrealized_pnl_usdt = calculate_unrealized_pnl(trade, current_price)
             entry_time_str = datetime.fromtimestamp(trade['entry_time']).strftime('%Y-%m-%d %H:%M:%S')
             duration_minutes = int((time.time() - trade['entry_time']) / 60)
-            
-            # Calculate unrealized P&L in USDT
-            if trade['signal'] == 1:  # BUY
-                unrealized_pnl_usdt = trade['quantity'] * (current_price - trade['entry_price'])
-            else:  # SELL
-                unrealized_pnl_usdt = trade['quantity'] * (trade['entry_price'] - current_price)
             
             # Check if this trade already exists in log (by timestamp and entry_price)
             trade_exists = False
@@ -751,12 +753,14 @@ def execute_trade(signal, exchange, quantity, entry_price, tp, sl):
     }
 
 def calculate_unrealized_pnl(trade, current_price):
-    """Calculate unrealized P&L percentage for an active trade"""
+    """Calculate unrealized P&L percentage and dollar amount for an active trade"""
     if trade['signal'] == 1:  # BUY trade
         pnl_pct = ((current_price - trade['entry_price']) / trade['entry_price']) * 100
+        pnl_usdt = trade['quantity'] * (current_price - trade['entry_price'])
     else:  # SELL trade
         pnl_pct = ((trade['entry_price'] - current_price) / trade['entry_price']) * 100
-    return pnl_pct
+        pnl_usdt = trade['quantity'] * (trade['entry_price'] - current_price)
+    return pnl_pct, pnl_usdt
 
 def check_trade_loss(trade, current_price):
     """Check if the active trade hit stop loss (resulted in a loss)"""
@@ -879,14 +883,18 @@ def adopt_new_model():
     import os
     import shutil
     
+    current_model_path = os.path.join(MODEL_DIR, 'btc_predicter_model.pth')
+    test_model_path = os.path.join(MODEL_DIR, 'btc_predicter_model_test.pth')
+    backup_model_path = os.path.join(MODEL_DIR, 'btc_predicter_model_backup.pth')
+    
     # Backup current model
-    if os.path.exists('btc_predicter_model.pth'):
-        shutil.copy('btc_predicter_model.pth', 'btc_predicter_model_backup.pth')
-        logging.info("📦 Backed up current model to btc_predicter_model_backup.pth")
+    if os.path.exists(current_model_path):
+        shutil.copy(current_model_path, backup_model_path)
+        logging.info(f"📦 Backed up current model to {backup_model_path}")
     
     # Replace with new model
-    if os.path.exists('btc_predicter_model_test.pth'):
-        shutil.copy('btc_predicter_model_test.pth', 'btc_predicter_model.pth')
+    if os.path.exists(test_model_path):
+        shutil.copy(test_model_path, current_model_path)
         logging.info("✅ New model adopted as primary model")
     else:
         logging.info("❌ Error: Test model file not found!")
@@ -982,7 +990,8 @@ def retrain_with_recent_data(client):
     result             = subprocess.run([python_path, 'train.py', '--test-mode'], capture_output=True, text=True)
     if result.returncode == 0:
         logging.info("Fine-tuning complete successfully.")
-        logging.info("New model saved as btc_predicter_model_test.pth")
+        test_model_path = os.path.join(MODEL_DIR, 'btc_predicter_model_test.pth')
+        logging.info(f"New model saved as {test_model_path}")
     else:
         logging.warning(f"Fine-tuning encountered issues: {result.stderr[:500]}")
         logging.info("Continuing with current model without fine-tuning.")
