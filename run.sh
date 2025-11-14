@@ -44,10 +44,10 @@ print_header() {
 
   # Function to check if Python is installed
 check_python() {
-    if ! command -v python3 &> /dev/null && ! command -v python &> /dev/null; then
-        print_error "Python is not installed. Please install Python 3.8 or higher."
-        exit 1
-    fi
+    # if ! command -v python3 &> /dev/null && ! command -v python &> /dev/null; then
+    #     print_error "Python is not installed. Please install Python 3.8 or higher."
+    #     exit 1
+    # fi
     
     # Use python3 if available, otherwise python
     if command -v python3 &> /dev/null; then
