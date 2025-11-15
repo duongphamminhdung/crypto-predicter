@@ -450,74 +450,66 @@ def main():
 
 def calculate_trade_amount(confidence, balance, current_price, stop_loss):
     """
-    Calculate recommended trade amount based on confidence level and risk management.
-    Uses a combination of:
-    - Confidence-based sizing (higher confidence = larger position)
-    - Risk management (limit risk per trade based on stop loss distance)
+    Calculate recommended trade amount based on confidence level.
+    Higher confidence = larger position size.
+    
+    Position sizing by confidence:
+    - 1.0: 75% of balance
+    - 0.95-0.999: 70% of balance
+    - 0.90-0.95: 65% of balance
+    - 0.85-0.90: 55% of balance
+    - 0.80-0.85: 45% of balance
+    - 0.75-0.80: 35% of balance
+    - 0.70-0.75: 25% of balance
     
     Args:
         confidence: Model confidence (0.0 to 1.0)
         balance: Available USDT balance
         current_price: Current BTC price
-        stop_loss: Stop loss price
+        stop_loss: Stop loss price (for reference, not used in calculation)
     
-    Returns:
-        trade_percentage: Percentage of balance to trade
-        trade_amount_usdt: Amount in USDT
-        trade_quantity_btc: Quantity in BTC
+    Returns           : 
+    trade_percentage  : Percentage of balance to trade
+    trade_amount_usdt : Amount in USDT
+    trade_quantity_btc: Quantity in BTC
     """
-    # Base risk per trade (max % of balance to risk)
-    max_risk_per_trade = 2.0  # Max 2% of balance at risk
-    
-    # Calculate stop loss distance as percentage
-    sl_distance_pct = abs(current_price - stop_loss) / current_price * 100
-    
-    # Ensure stop loss distance is reasonable (between 0.5% and 5%)
-    if sl_distance_pct < 0.5:
-        sl_distance_pct = 0.5  # Minimum 0.5% stop loss distance
-    elif sl_distance_pct > 5.0:
-        sl_distance_pct = 5.0  # Maximum 5% stop loss distance (too wide = too risky)
-    
-    # Confidence-based multiplier (0.7 to 1.0 confidence maps to 1.0x to 2.0x)
-    if confidence >= 0.9:
-        confidence_multiplier = 2.0
+    # Confidence-based position sizing (% of balance to trade)
+    if confidence >= 1.0:
+        trade_percentage = 75.0  # 75% of balance for perfect confidence (1.0)
+    elif confidence >= 0.95:
+        trade_percentage = 70.0  # 70% of balance for very high confidence (0.95-0.999)
+    elif confidence >= 0.90:
+        trade_percentage = 65.0  # 65% of balance
     elif confidence >= 0.85:
-        confidence_multiplier = 1.75
-    elif confidence >= 0.8:
-        confidence_multiplier = 1.5
+        trade_percentage = 55.0  # 55% of balance (0.85-0.90)
+    elif confidence >= 0.80:
+        trade_percentage = 45.0  # 45% of balance
     elif confidence >= 0.75:
-        confidence_multiplier = 1.25
-    else:  # 0.7 - 0.75
-        confidence_multiplier = 1.0
+        trade_percentage = 35.0  # 35% of balance
+    else:  # 0.70 - 0.75
+        trade_percentage = 25.0  # 25% of balance for minimum confidence threshold
     
-    # Calculate risk amount (the actual $ amount we're willing to risk)
-    risk_amount = balance * (max_risk_per_trade / 100) * confidence_multiplier
-    
-    # Calculate position size based on risk
-    # Formula: Position Size = Risk Amount / Stop Loss Distance
-    # This ensures we risk exactly the calculated amount if stop loss is hit
-    trade_amount_usdt = risk_amount / (sl_distance_pct / 100)
-    
-    # Cap at maximum % of balance (don't use more than 30% of balance in one trade)
-    max_position_size = balance * 0.30
-    if trade_amount_usdt > max_position_size:
-        trade_amount_usdt = max_position_size
-        # Recalculate risk amount if we hit the cap
-        risk_amount = trade_amount_usdt * (sl_distance_pct / 100)
+    # Calculate trade amount in USDT
+    trade_amount_usdt = balance * (trade_percentage / 100)
     
     # Minimum trade size
     min_trade_amount = 10.0  # Minimum $10 USDT
     if trade_amount_usdt < min_trade_amount:
         trade_amount_usdt = min_trade_amount
+        trade_percentage = (trade_amount_usdt / balance * 100) if balance > 0 else 0
     
-    # Calculate trade percentage and BTC quantity
-    trade_percentage = (trade_amount_usdt / balance * 100) if balance > 0 else 0
+    # Calculate quantity in BTC
     trade_quantity_btc = trade_amount_usdt / current_price
     
-    # Debug logging (can be removed later)
-    logging.debug(f"Risk calc: Balance=${balance:.2f}, SL_dist={sl_distance_pct:.2f}%, "
-                  f"Conf={confidence:.2f} (mult={confidence_multiplier:.2f}x), "
-                  f"Risk=${risk_amount:.2f}, Trade=${trade_amount_usdt:.2f} ({trade_percentage:.1f}%)")
+    # Calculate actual risk based on stop loss distance
+    sl_distance_pct = abs(current_price - stop_loss) / current_price * 100
+    actual_risk_usdt = trade_amount_usdt * (sl_distance_pct / 100)
+    
+    # Log risk management info
+    logging.debug(
+        f"Position sizing: Conf={confidence:.2f}, Position={trade_percentage:.1f}%, "
+        f"Trade=${trade_amount_usdt:.2f}, SL_dist={sl_distance_pct:.2f}%, Risk=${actual_risk_usdt:.2f}"
+    )
     
     return trade_percentage, trade_amount_usdt, trade_quantity_btc
 
@@ -1037,9 +1029,9 @@ def retrain_with_recent_data(client):
     logging.info("Starting model fine-tuning with recent data (time-weighted)...")
     # Run training script with test mode flag using the conda environment
     # The presence of 'recent_training_data.csv' automatically triggers fine-tuning mode
-    # result             = subprocess.run(['python', 'train.py', '--test-mode'], capture_output=True, text=True)
-    python_path        = '/usr/local/anaconda3/envs/crypto/bin/python'
-    result             = subprocess.run([python_path, 'train.py', '--test-mode'], capture_output=True, text=True)
+    result             = subprocess.run(['python', 'train.py', '--test-mode'], capture_output=True, text=True)
+    # python_path        = '/usr/local/anaconda3/envs/crypto/bin/python'
+    # result             = subprocess.run([python_path, 'train.py', '--test-mode'], capture_output=True, text=True)
     if result.returncode == 0:
         logging.info("Fine-tuning complete successfully.")
         test_model_path = os.path.join(MODEL_DIR, 'btc_predicter_model_test.pth')
@@ -1067,7 +1059,7 @@ def load_stats():
     # Default stats for a new day or new file
     return {"date": today, "successful_trades": 0, "failed_trades": 0, "total_profit_usdt": 0.0}
 
-def save_stats(stats):
+def save_stats(stats): 
     """Save daily stats to JSON file."""
     # Calculate win rate
     total_trades = stats['successful_trades'] + stats['failed_trades']

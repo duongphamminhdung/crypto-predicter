@@ -188,7 +188,7 @@ def main():
     else:
         # Initial training from scratch
         print("🏗️  Training model from scratch...")
-        predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, epochs=150, lr=0.0005, time_weighted=False)
+        predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, epochs=100, lr=0.0005, time_weighted=False)
         print("✅ Model training complete.")
 
     # Save the trained model and the scaler
