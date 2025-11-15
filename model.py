@@ -20,7 +20,7 @@ class CryptoPredicter(nn.Module)                                                
             nn.Linear(hidden_layer_size, 1)
         )
         
-        # FC layer before output heads for better representation
+                          # FC layer before output heads for better representation
         self.fc_hidden = nn.Linear(hidden_layer_size, hidden_layer_size)
         self.dropout_layer = nn.Dropout(dropout)
         

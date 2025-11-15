@@ -210,9 +210,11 @@ def main():
                 trade_profit = is_trade_complete(trade, current_price)
                 
                 if trade_loss:
-                    # Increment trade counter and get index
-                    trade_counter += 1
-                    trade_index = trade_counter
+                    # Use stored trade index if available, otherwise assign new one
+                    trade_index = trade.get('index', None)
+                    if trade_index is None:
+                        trade_counter += 1
+                        trade_index = trade_counter
                     pnl = print_trade_result(trade, current_price, result='LOSS', simulated=TEST, trade_index=trade_index)
                     if not TEST:
                         update_stats(daily_stats, 'LOSS', pnl)
@@ -229,9 +231,11 @@ def main():
                         test_model_predictions = []
                         logging.info(f"🧪 Starting 3-minute testing phase - comparing models...")
                 elif trade_profit:
-                    # Increment trade counter and get index
-                    trade_counter += 1
-                    trade_index = trade_counter
+                    # Use stored trade index if available, otherwise assign new one
+                    trade_index = trade.get('index', None)
+                    if trade_index is None:
+                        trade_counter += 1
+                        trade_index = trade_counter
                     pnl = print_trade_result(trade, current_price, result='PROFIT', simulated=TEST, trade_index=trade_index)
                     if not TEST:
                         update_stats(daily_stats, 'PROFIT', pnl)
@@ -245,10 +249,11 @@ def main():
             if trades_list:
                 mode_label = "🧪 SIMULATED Trades" if TEST else "📊 Active Trades"
                 logging.info(f"\n{mode_label}: {len(trades_list)}")
-                for i, trade in enumerate(trades_list, 1): 
+                for trade in trades_list: 
                     pnl_pct, pnl_usdt = calculate_unrealized_pnl(trade, current_price)
                     status_emoji = "🟢" if pnl_pct > 0 else "🔴"
-                    logging.info(f"   {status_emoji} Trade #{i}: {trade['side']} | Entry: ${trade['entry_price']:.2f} | "
+                    trade_index = trade.get('index', '?')  # Use stored trade index
+                    logging.info(f"   {status_emoji} Trade #{trade_index}: {trade['side']} | Entry: ${trade['entry_price']:.2f} | "
                                f"Unrealized P&L: {pnl_pct:+.2f}% (${pnl_usdt:+.2f})")
                 
                                                                                                                                                                                                                                                                                                                                                 # Note: Active trades are displayed above but not logged to JSON
@@ -310,8 +315,11 @@ def main():
             if trades_list:
                 for i, trade in enumerate(trades_list):
                     if check_early_stop(trade, current_price, predicted_signal):
-                        trade_counter += 1
-                        trade_index = trade_counter
+                        # Use stored trade index if available, otherwise assign new one
+                        trade_index = trade.get('index', None)
+                        if trade_index is None:
+                            trade_counter += 1
+                            trade_index = trade_counter
                         pnl = print_trade_result(trade, current_price, result='LOSS', simulated=TEST, trade_index=trade_index, early_stop=True)
                         if not TEST:
                             update_stats(daily_stats, 'LOSS', pnl)
@@ -498,59 +506,89 @@ def main():
                 logging.info("\n🧪 Testing mode: Both models running in parallel. Using current model for trading.")
                 # Still execute trades with current model during testing if VERY high confidence
                 if confidence >= CONFIDENCE_THRESHOLD_TRADE:
-                    # Check if we should skip this trade: only open new trade if entry is better than existing ones
+                              # Check if we should skip this trade: only open new trade if entry is better OR confidence is higher (>=0.9)
                     should_skip = False
                     for trade in trades_list:
                         if trade['signal'] == predicted_signal:  # Same signal type
+                            existing_confidence = trade.get('confidence', 0.0)
+                            entry_worse = False
+                            
                             if predicted_signal == 1:  # BUY - better entry = lower price
-                                if current_price >= trade['entry_price']:
-                                    should_skip = True
-                                    logging.info(f"⏭️  Skipping BUY trade: Existing BUY trade at ${trade['entry_price']:.2f}, "
-                                               f"new entry would be ${current_price:.2f} (not better - same or higher)")
-                                    break
+                                entry_worse = current_price >= trade['entry_price']
                             else:  # SELL - better entry = higher price
-                                if current_price <= trade['entry_price']:
+                                entry_worse = current_price <= trade['entry_price']
+                            
+                            if entry_worse:
+                                # Entry is worse, but check if confidence is high enough to override
+                                if confidence >= 0.9 and confidence > existing_confidence:
+                                    # High confidence and higher than existing - allow trade
+                                    logging.info(f"✅ Overriding worse entry: Confidence {confidence:.2f} >= 0.9 and higher than existing {existing_confidence:.2f}")
+                                    should_skip = False
+                                    break
+                                else:
+                                    # Entry worse and not enough confidence to override
                                     should_skip = True
-                                    logging.info(f"⏭️  Skipping SELL trade: Existing SELL trade at ${trade['entry_price']:.2f}, "
-                                               f"new entry would be ${current_price:.2f} (not better - same or lower)")
+                                    logging.info(f"⏭️  Skipping {signal_map[predicted_signal]} trade: Existing trade at ${trade['entry_price']:.2f} "
+                                               f"(conf: {existing_confidence:.2f}), new entry would be ${current_price:.2f} "
+                                               f"(conf: {confidence:.2f}) - entry not better and confidence not high enough")
                                     break
                     
                     if not should_skip:
+                        # Assign trade index when creating the trade
+                        trade_counter += 1
+                        trade_index = trade_counter
                         logging.info(f"✅ VERY HIGH CONFIDENCE ({confidence:.2f}) - Executing trade")
                         if TEST:
-                            new_trade = simulate_trade(predicted_signal, trade_quantity_btc, current_price, tp, sl)
+                            new_trade = simulate_trade(predicted_signal, trade_quantity_btc, current_price, tp, sl, confidence=confidence)
+                            new_trade['index'] = trade_index  # Store index in trade
                             simulated_trades.append(new_trade)
                         else:
-                            new_trade = execute_trade(predicted_signal, exchange, trade_quantity_btc, current_price, tp, sl)
+                            new_trade = execute_trade(predicted_signal, exchange, trade_quantity_btc, current_price, tp, sl, confidence=confidence)
+                            new_trade['index'] = trade_index  # Store index in trade
                             active_trades.append(new_trade)
                 else:
                     logging.info(f"⏸️  Confidence {confidence:.2f} below trading threshold ({CONFIDENCE_THRESHOLD_TRADE}). Waiting for better signal.")
             elif confidence >= CONFIDENCE_THRESHOLD_TRADE:
                 # ONLY trade with high confidence (>70%) for futures
-                # Check if we should skip this trade: only open new trade if entry is better than existing ones
+                # Check if we should skip this trade: only open new trade if entry is better OR confidence is higher (>=0.9)
                 should_skip = False
                 for trade in trades_list:
                     if trade['signal'] == predicted_signal:  # Same signal type
+                        existing_confidence = trade.get('confidence', 0.0)
+                        entry_worse = False
+                        
                         if predicted_signal == 1:  # BUY - better entry = lower price
-                            if current_price >= trade['entry_price']:
-                                should_skip = True
-                                logging.info(f"⏭️  Skipping BUY trade: Existing BUY trade at ${trade['entry_price']:.2f}, "
-                                           f"new entry would be ${current_price:.2f} (not better - same or higher)")
-                                break
+                            entry_worse = current_price >= trade['entry_price']
                         else:  # SELL - better entry = higher price
-                            if current_price <= trade['entry_price']:
+                            entry_worse = current_price <= trade['entry_price']
+                        
+                        if entry_worse:
+                            # Entry is worse, but check if confidence is high enough to override
+                            if confidence >= 0.9 and confidence > existing_confidence:
+                                # High confidence and higher than existing - allow trade
+                                logging.info(f"✅ Overriding worse entry: Confidence {confidence:.2f} >= 0.9 and higher than existing {existing_confidence:.2f}")
+                                should_skip = False
+                                break
+                            else:
+                                # Entry worse and not enough confidence to override
                                 should_skip = True
-                                logging.info(f"⏭️  Skipping SELL trade: Existing SELL trade at ${trade['entry_price']:.2f}, "
-                                           f"new entry would be ${current_price:.2f} (not better - same or lower)")
+                                logging.info(f"⏭️  Skipping {signal_map[predicted_signal]} trade: Existing trade at ${trade['entry_price']:.2f} "
+                                           f"(conf: {existing_confidence:.2f}), new entry would be ${current_price:.2f} "
+                                           f"(conf: {confidence:.2f}) - entry not better and confidence not high enough")
                                 break
                 
                 if not should_skip:
+                    # Assign trade index when creating the trade
+                    trade_counter += 1
+                    trade_index = trade_counter
                     logging.info(f"✅ VERY HIGH CONFIDENCE ({confidence:.2f}) - Executing trade")
                     if TEST:
-                        new_trade = simulate_trade(predicted_signal, trade_quantity_btc, current_price, tp, sl)
+                        new_trade = simulate_trade(predicted_signal, trade_quantity_btc, current_price, tp, sl, confidence=confidence)
+                        new_trade['index'] = trade_index  # Store index in trade
                         simulated_trades.append(new_trade)
                     else:
-                        new_trade = execute_trade(predicted_signal, exchange, trade_quantity_btc, current_price, tp, sl)
+                        new_trade = execute_trade(predicted_signal, exchange, trade_quantity_btc, current_price, tp, sl, confidence=confidence)
+                        new_trade['index'] = trade_index  # Store index in trade
                         active_trades.append(new_trade)
             elif confidence < CONFIDENCE_THRESHOLD_TEST:
                 # Trigger model testing and fine-tuning when confidence is below threshold
@@ -680,7 +718,7 @@ def print_prediction(signal, confidence, tp, sl, trade_percentage, trade_amount_
     logging.info(f"Trade Amount: ${trade_amount_usdt:.2f} USDT ({trade_quantity_btc:.6f} BTC)")
     logging.info(f"{'='*60}\n")
 
-def simulate_trade(signal, quantity, entry_price, tp, sl):
+def simulate_trade(signal, quantity, entry_price, tp, sl, confidence=None):
     """Simulate a trade without actually executing it (for TEST mode)"""
     side = {0: 'SELL', 1: 'BUY'}[signal]
     # Don't log simulated message - already shown at startup
@@ -697,7 +735,7 @@ def simulate_trade(signal, quantity, entry_price, tp, sl):
         expected_loss_usdt = quantity * (sl - entry_price)
     
     # Return simulated trade info for tracking
-    return {
+    trade_info = {
         'signal': signal,
         'entry_price': entry_price,
         'tp': tp,
@@ -709,6 +747,10 @@ def simulate_trade(signal, quantity, entry_price, tp, sl):
         'expected_profit_usdt': expected_profit_usdt,
         'expected_loss_usdt': expected_loss_usdt
     }
+    # Store confidence if provided
+    if confidence is not None:
+        trade_info['confidence'] = confidence
+    return trade_info
 
 def log_trade_to_file(trade_index, trade, exit_price, result, actual_pnl_usdt, pnl_percentage, price_change_pct, duration_minutes, simulated=False):
     """Log trade details to a separate JSON file"""
@@ -883,7 +925,7 @@ def print_trade_result(trade, exit_price, result, simulated=False, trade_index=N
     
     return actual_pnl_usdt
 
-def execute_trade(signal, exchange, quantity, entry_price, tp, sl):
+def execute_trade(signal, exchange, quantity, entry_price, tp, sl, confidence=None):
     """Execute trade and return trade info for tracking"""
     side = {0: 'SELL', 1: 'BUY'}[signal]
     logging.info(f"\n💰 Confidence >= 0.65. Placing {side} order.")
@@ -903,7 +945,7 @@ def execute_trade(signal, exchange, quantity, entry_price, tp, sl):
         expected_loss_usdt = quantity * (sl - entry_price)
     
     # Return trade info for tracking
-    return {
+    trade_info = {
         'signal'              : signal,
         'entry_price'         : entry_price,
         'tp'                  : tp,
@@ -915,6 +957,10 @@ def execute_trade(signal, exchange, quantity, entry_price, tp, sl):
         'expected_profit_usdt': expected_profit_usdt,
         'expected_loss_usdt'  : expected_loss_usdt
     }
+    # Store confidence if provided
+    if confidence is not None:
+        trade_info['confidence'] = confidence
+    return trade_info
 
 def calculate_unrealized_pnl(trade, current_price):
     """Calculate unrealized P&L percentage and dollar amount for an active trade"""
