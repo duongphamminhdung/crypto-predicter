@@ -155,7 +155,7 @@ def main():
     print("Generating trading labels (buy/sell signals)...")
     labeled_df = processor._generate_labels(df.copy())
     
-    # Save the labeled data (only for full training, not fine-tuning)
+      # Save the labeled data (only for full training, not fine-tuning)
     if not is_fine_tuning:
         labeled_df.to_csv('training_data.csv')
         print(f"✅ Training data saved to training_data.csv ({len(labeled_df)} rows)")
