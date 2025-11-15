@@ -76,7 +76,7 @@ def main():
     exchange = Exchange()
     
     look_back      = 60
-    future_horizon = 1  # Look 10 minutes ahead for TP/SL predictions 
+    future_horizon = 1   # Look 10 minutes ahead for TP/SL predictions 
     
     # Track active trades for loss detection (now a list to support multiple trades)
     active_trades = []
