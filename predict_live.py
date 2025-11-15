@@ -159,7 +159,7 @@ def main():
 
             # Fetch data for prediction - need extra for technical indicators
             # Futures API returns up to 2000 records, so we can get all we need in one request
-            df = client.get_kline_data(symbol='BTC_USDT', interval='Min1')  # Gets recent data
+            df = client.get_kline_data(symbol='BTC_USDT', interval='Min1')  # Gets recent BTC/USDT data
             
             if df is None or df.empty:
                 logging.error("Failed to fetch market data. Skipping this cycle.")
@@ -442,6 +442,33 @@ def main():
                 sl = current_price * 0.99
                 # Default to BUY if TP calculation fails
                 predicted_signal = 1 if tp > current_price else 0
+            
+            # Risk Management: Check if profitable trades should be closed when model predicts opposite signal
+            # This check happens after TP-based signal is calculated
+            if trades_list:
+                risk_mgmt_index, risk_mgmt_trade = check_profitable_trade_risk_management(
+                    trades_list, current_price, predicted_signal
+                )
+                if risk_mgmt_index is not None and risk_mgmt_trade is not None:
+                    # Close the profitable trade
+                    trade_index = risk_mgmt_trade.get('index', None)
+                    if trade_index is None:
+                        trade_counter += 1
+                        trade_index = trade_counter
+                    
+                    # Determine result based on P&L
+                    pnl_pct, pnl_usdt = calculate_unrealized_pnl(risk_mgmt_trade, current_price)
+                    result = 'PROFIT' if pnl_usdt > 0 else 'LOSS'
+                    
+                    pnl = print_trade_result(risk_mgmt_trade, current_price, result=result, 
+                                            simulated=TEST, trade_index=trade_index, early_stop=False)
+                    if not TEST:
+                        update_stats(daily_stats, result, pnl)
+                    
+                    trades_list.pop(risk_mgmt_index)
+                    logging.info(f"🛡️ Risk management: Closed profitable trade due to opposite signal prediction")
+                    # Continue to next cycle after closing trade
+                    continue
             
                                                                               # Calculate recommended trade amount based on confidence and balance
             try:
@@ -1077,6 +1104,63 @@ def check_early_stop(trade, current_price, predicted_signal=None):
         return True
     
     return False
+
+def check_profitable_trade_risk_management(trades_list, current_price, predicted_signal):
+    """
+    Risk management: Close profitable trades when model predicts opposite signal.
+    
+    Rules:
+    - For BUY trades: Close the highest entry price (worst entry) if it's profitable AND model predicts SELL
+    - For SELL trades: Close the lowest entry price (worst entry) if it's profitable AND model predicts BUY
+    
+    Args:
+        trades_list: List of active trades
+        current_price: Current market price
+        predicted_signal: Model's predicted signal (0=SELL, 1=BUY)
+    
+    Returns:
+        tuple: (trade_to_close_index, trade_to_close) or (None, None) if no trade should be closed
+    """
+    if not trades_list or predicted_signal is None:
+        return None, None
+    
+    # Separate BUY and SELL trades
+    buy_trades = [t for t in trades_list if t['signal'] == 1]
+    sell_trades = [t for t in trades_list if t['signal'] == 0]
+    
+    # Check BUY trades: find highest entry (worst entry) that is profitable
+    if buy_trades and predicted_signal == 0:  # Model predicts SELL
+        # Find the highest entry price among BUY trades
+        highest_buy_trade = max(buy_trades, key=lambda t: t['entry_price'])
+        pnl_pct, pnl_usdt = calculate_unrealized_pnl(highest_buy_trade, current_price)
+        
+        # Check if this trade is profitable
+        if pnl_pct > 0:
+            # Find the index in the original trades_list
+            for i, trade in enumerate(trades_list):
+                if (trade['signal'] == 1 and 
+                    abs(trade['entry_price'] - highest_buy_trade['entry_price']) < 0.01):
+                    logging.warning(f"🛡️ Risk Management: Closing profitable BUY trade (highest entry ${highest_buy_trade['entry_price']:.2f}) "
+                                  f"with unrealized profit {pnl_pct:+.2f}% (${pnl_usdt:+.2f}) because model predicts SELL")
+                    return i, highest_buy_trade
+    
+    # Check SELL trades: find lowest entry (worst entry) that is profitable
+    if sell_trades and predicted_signal == 1:  # Model predicts BUY
+        # Find the lowest entry price among SELL trades
+        lowest_sell_trade = min(sell_trades, key=lambda t: t['entry_price'])
+        pnl_pct, pnl_usdt = calculate_unrealized_pnl(lowest_sell_trade, current_price)
+        
+        # Check if this trade is profitable
+        if pnl_pct > 0:
+            # Find the index in the original trades_list
+            for i, trade in enumerate(trades_list):
+                if (trade['signal'] == 0 and 
+                    abs(trade['entry_price'] - lowest_sell_trade['entry_price']) < 0.01):
+                    logging.warning(f"🛡️ Risk Management: Closing profitable SELL trade (lowest entry ${lowest_sell_trade['entry_price']:.2f}) "
+                                  f"with unrealized profit {pnl_pct:+.2f}% (${pnl_usdt:+.2f}) because model predicts BUY")
+                    return i, lowest_sell_trade
+    
+    return None, None
 
 def should_adopt_new_model(current_predictions, test_predictions):
     """
