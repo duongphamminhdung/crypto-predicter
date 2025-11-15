@@ -38,12 +38,14 @@ TEST = True  # ⚠️ CHANGE THIS TO False FOR LIVE TRADING
                                     # Only trade with very high confidence to minimize risk
 CONFIDENCE_THRESHOLD_TRADE  = 0.70  # Only trade when confidence > 70%
 CONFIDENCE_THRESHOLD_TEST   = 0.70  # Trigger model testing when below 70%
-MAX_POSITION_RISK           = 0.05  # Max 5% of balance at risk per trade (conservative for futures)
-MAX_LEVERAGE                = 5     # Maximum leverage to use (lower = safer)
+MAX_POSITION_RISK           = 0.10  # Max 10% of balance at risk per trade
+MAX_LEVERAGE                = 75    # Maximum leverage to use (lower = safer)
                                     # Early stop parameters
-EARLY_STOP_MAX_TIME_MINUTES = 30    # Close trade if it's been red for this long (minutes)
+EARLY_STOP_MAX_TIME_MINUTES = 120   # Close trade if it's been red for this long (minutes) - 2 hours
 EARLY_STOP_OPPOSITE_SIGNAL  = True  # Close losing trades if model predicts opposite signal
                                     # Early stop triggers when BOTH conditions are met: time limit AND opposite signal
+                                    # Model refinement parameters
+REFINEMENT_INTERVAL_SECONDS = 3600  # Trigger model refinement every 1 hour (3600 seconds)
                                     # ═══════════════════════════════════════════════════════════
 
 def setup_logging():
@@ -87,6 +89,9 @@ def main():
     testing_duration = 3 * 60  # 3 minutes in seconds
     current_model_predictions = []
     test_model_predictions = []
+    
+    # Track model refinement timing
+    last_refinement_time = None  # Will be set on first refinement
 
     # Load daily trading stats
     daily_stats = load_stats()
@@ -163,6 +168,36 @@ def main():
             
             # Immediately append new data to training_data.csv
             append_data_to_training_file(df)
+            
+            # Check if it's time to trigger hourly model refinement
+            current_time = time.time()
+            should_refine = False
+            if last_refinement_time is None:
+                # First time - trigger refinement to initialize
+                should_refine = True
+                logging.info(f"\n⏰ First refinement cycle - initializing hourly refinement schedule")
+            else:
+                time_since_last_refinement = current_time - last_refinement_time
+                if time_since_last_refinement >= REFINEMENT_INTERVAL_SECONDS:
+                    should_refine = True
+                    hours_elapsed = time_since_last_refinement / 3600
+                    logging.info(f"\n⏰ Hourly refinement trigger: {hours_elapsed:.2f} hours since last refinement")
+            
+            # Trigger refinement if needed and not already testing
+            if should_refine and not testing_model:
+                logging.info("🔄 Triggering scheduled model refinement with recent data...")
+                retrain_with_recent_data(client)
+                # Start testing the new model
+                testing_model = True
+                testing_start_time = time.time()
+                last_refinement_time = current_time  # Update last refinement time
+                current_model_predictions = []
+                test_model_predictions = []
+                logging.info(f"🧪 Starting 3-minute testing phase - comparing models...")
+            elif should_refine and testing_model:
+                # Still in testing phase, reschedule for after testing completes
+                logging.info(f"⏸️  Refinement scheduled but currently testing model. Will refine after testing completes.")
+                last_refinement_time = current_time - (REFINEMENT_INTERVAL_SECONDS - testing_duration)  # Adjust to refine after testing
                 
             current_price = df['close'].iloc[-1]
             
@@ -189,6 +224,7 @@ def main():
                         # Start testing the new model
                         testing_model = True
                         testing_start_time = time.time()
+                        last_refinement_time = time.time()  # Update last refinement time
                         current_model_predictions = []
                         test_model_predictions = []
                         logging.info(f"🧪 Starting 3-minute testing phase - comparing models...")
@@ -233,7 +269,7 @@ def main():
             # Select the same features used in training
             feature_columns = [
                 'close', 'price_change', 'high_low_range', 'close_open_diff',
-                'sma_5', 'sma_10', 'sma_20', 'ema_5', 'ema_10',
+                'sma_5', 'sma_10', 'sma_20', 'sma_100', 'ema_5', 'ema_10',
                 'rsi', 'macd', 'macd_signal', 'macd_diff',
                 'bb_middle', 'bb_upper', 'bb_lower', 'bb_position',
                 'volume_change', 'volume_ratio',
@@ -284,6 +320,7 @@ def main():
                         break  # Only close one trade per cycle to avoid index issues
             
             # Use close_scaler for inverse transform of TP/SL
+            signal_mismatch = False  # Default to no mismatch
             try:
                 if close_scaler is not None:
                     tp = close_scaler.inverse_transform(tp_scaled.detach().cpu().numpy().reshape(-1, 1))[0][0]
@@ -293,69 +330,71 @@ def main():
                     tp = current_price * 1.01
                     sl = current_price * 0.99
                 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            # Validate TP/SL direction based on signal
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            # For BUY: TP should be above entry, SL below entry
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            # For SELL: TP should be below entry, SL above entry
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            # If invalid, reverse the signal instead of adjusting TP/SL
-                signal_map      = {0: 'SELL', 1: 'BUY'}
-                original_tp     = tp
-                original_sl     = sl
-                original_signal = predicted_signal
-                signal_reversed = False
+                signal_map = {0: 'SELL', 1: 'BUY'}
+                model_predicted_signal = predicted_signal  # Keep original model prediction
                 
-                if predicted_signal == 1:  # BUY
-                    if tp <= current_price:
-                        # Invalid TP for BUY - reverse to SELL
-                        predicted_signal = 0
-                        signal_reversed = True
-                        logging.warning(f"⚠️ Invalid TP for BUY: ${original_tp:.2f} <= Entry ${current_price:.2f}. Reversing signal to SELL")
-                    elif sl >= current_price:
-                        # Invalid SL for BUY - reverse to SELL
-                        predicted_signal = 0
-                        signal_reversed = True
-                        logging.warning(f"⚠️ Invalid SL for BUY: ${original_sl:.2f} >= Entry ${current_price:.2f}. Reversing signal to SELL")
-                else:  # SELL
-                    if tp >= current_price:
-                        # Invalid TP for SELL - reverse to BUY
-                        predicted_signal = 1
-                        signal_reversed = True
-                        logging.warning(f"⚠️ Invalid TP for SELL: ${original_tp:.2f} >= Entry ${current_price:.2f}. Reversing signal to BUY")
-                    elif sl <= current_price:
-                        # Invalid SL for SELL - reverse to BUY
-                        predicted_signal = 1
-                        signal_reversed = True
-                        logging.warning(f"⚠️ Invalid SL for SELL: ${original_sl:.2f} <= Entry ${current_price:.2f}. Reversing signal to BUY")
-                
-                # If signal was reversed, recalculate TP/SL for the reversed signal
-                if signal_reversed:
-                    if predicted_signal == 1:  # Now BUY after reversal
-                        # Set TP above and SL below for BUY (reversed values)
-                        tp = current_price * 1.02  # 2% above
-                        sl = current_price * 0.95  # 5% below
-                    else:  # Now SELL after reversal
-                        # Set TP below and SL above for SELL (reversed values)
-                        tp = current_price * 0.98  # 2% below
-                        sl = current_price * 1.05  # 5% above
-                    logging.info(f"📊 Signal reversed: {signal_map[original_signal]} → {signal_map[predicted_signal]} | "
-                               f"New TP: ${tp:.2f} | New SL: ${sl:.2f}")
+                # Focus trading on predicted TP: TP > entry → BUY, TP < entry → SELL
+                if tp > current_price:
+                    # TP is above entry → BUY signal based on TP
+                    tp_based_signal = 1  # BUY
+                    tp_pct = ((tp - current_price) / current_price) * 100  # Calculate TP percentage
                 else:
-                                                 # Normal TP/SL values (not reversed): TP = 110%, SL = 80%
-                    if   predicted_signal == 1:  # BUY
-                        tp   = current_price * 1.10  # 10% above
-                        sl   = current_price * 0.80  # 20% below
-                    else:                        # SELL
-                        tp   = current_price * 0.90  # 10% below
-                        sl   = current_price * 1.20  # 20% above
+                    # TP is below entry → SELL signal based on TP
+                    tp_based_signal = 0  # SELL
+                    tp_pct = ((current_price - tp) / current_price) * 100  # Calculate TP percentage
+                
+                # Use TP-based signal for trading
+                predicted_signal = tp_based_signal
+                
+                # Check if model signal differs from TP-based signal
+                signal_mismatch = (model_predicted_signal != tp_based_signal)
+                
+                if signal_mismatch:
+                    # Model signal differs from TP-based signal - decrease TP percentage
+                    logging.warning(f"⚠️ Signal mismatch: Model predicts {signal_map[model_predicted_signal]}, "
+                                  f"but TP-based signal is {signal_map[tp_based_signal]} (TP: ${tp:.2f}). "
+                                  f"Using TP-based signal with reduced TP %")
+                    # Reduce TP percentage by half when signals differ
+                    reduced_tp_pct = tp_pct * 0.5
+                    
+                    if tp_based_signal == 1:  # BUY
+                        tp = current_price * (1 + reduced_tp_pct / 100)
+                        sl = current_price * 0.80  # 20% below
+                    else:  # SELL
+                        tp = current_price * (1 - reduced_tp_pct / 100)
+                        sl = current_price * 1.20  # 20% above
+                    
+                    logging.info(f"📊 Using TP-based signal ({signal_map[tp_based_signal]}) with reduced TP: "
+                               f"${tp:.2f} ({reduced_tp_pct:.2f}% vs original {tp_pct:.2f}%)")
+                else:
+                    # Model signal matches TP-based signal - use normal TP/SL values
+                    if tp_based_signal == 1:  # BUY
+                        # Use model's TP or default to 10% above if too low
+                        if tp <= current_price:
+                            tp = current_price * 1.10  # 10% above
+                        sl = current_price * 0.80  # 20% below
+                    else:  # SELL
+                        # Use model's TP or default to 10% below if too high
+                        if tp >= current_price:
+                            tp = current_price * 0.90  # 10% below
+                        sl = current_price * 1.20  # 20% above
+                    
+                    logging.info(f"✅ Model signal matches TP-based signal ({signal_map[tp_based_signal]}) | "
+                               f"TP: ${tp:.2f} ({tp_pct:.2f}%) | SL: ${sl:.2f}")
             except Exception as e:
                 logging.error(f"Failed to calculate TP/SL: {e}", exc_info=True)
                 tp = current_price * 1.01
                 sl = current_price * 0.99
+                # Default to BUY if TP calculation fails
+                predicted_signal = 1 if tp > current_price else 0
             
                                                                               # Calculate recommended trade amount based on confidence and balance
             try:
                 usdt_balance = exchange.get_usdt_balance()
+                # Pass signal alignment info: higher investment when model signal matches TP-based signal
+                signal_aligned = not signal_mismatch  # True if signals match
                 trade_percentage, trade_amount_usdt, trade_quantity_btc = calculate_trade_amount(
-                    confidence, usdt_balance, current_price, sl
+                    confidence, usdt_balance, current_price, sl, signal_aligned=signal_aligned
                 )
             except Exception as e:
                 logging.error(f"Failed to calculate trade amount: {e}", exc_info=True)
@@ -389,41 +428,53 @@ def main():
                     test_tp = current_price * 1.01
                     test_sl = current_price * 0.99
                 
-                # Validate test model TP/SL direction - reverse signal if invalid
-                test_original_signal = test_predicted_signal
-                test_signal_reversed = False
+                # Focus trading on predicted TP: TP > entry → BUY, TP < entry → SELL
+                test_model_predicted_signal = test_predicted_signal  # Keep original model prediction
                 
-                if test_predicted_signal == 1:  # BUY
-                    if test_tp <= current_price or test_sl >= current_price:
-                        # Invalid TP/SL for BUY - reverse to SELL
-                        test_predicted_signal = 0
-                        test_signal_reversed = True
-                else:  # SELL
-                    if test_tp >= current_price or test_sl <= current_price:
-                        # Invalid TP/SL for SELL - reverse to BUY
-                        test_predicted_signal = 1
-                        test_signal_reversed = True
-                
-                # If test signal was reversed, recalculate TP/SL for the reversed signal
-                if test_signal_reversed:
-                    if test_predicted_signal == 1:  # Now BUY after reversal
-                        test_tp = current_price * 1.02  # 2% above (reversed)
-                        test_sl = current_price * 0.95  # 5% below (reversed)
-                    else:  # Now SELL after reversal
-                        test_tp = current_price * 0.98  # 2% below (reversed)
-                        test_sl = current_price * 1.05  # 5% above (reversed)
+                if test_tp > current_price:
+                    # TP is above entry → BUY signal based on TP
+                    test_tp_based_signal = 1  # BUY
+                    test_tp_pct = ((test_tp - current_price) / current_price) * 100
                 else:
-                    # Normal TP/SL values (not reversed): TP = 110%, SL = 80%
-                    if test_predicted_signal == 1:  # BUY
-                        test_tp = current_price * 1.10  # 10% above
+                    # TP is below entry → SELL signal based on TP
+                    test_tp_based_signal = 0  # SELL
+                    test_tp_pct = ((current_price - test_tp) / current_price) * 100
+                
+                # Use TP-based signal for trading
+                test_predicted_signal = test_tp_based_signal
+                
+                # Check if test model signal differs from TP-based signal
+                test_signal_mismatch = (test_model_predicted_signal != test_tp_based_signal)
+                
+                if test_signal_mismatch:
+                    # Model signal differs from TP-based signal - decrease TP percentage
+                    # Reduce TP percentage by half when signals differ
+                    test_reduced_tp_pct = test_tp_pct * 0.5
+                    
+                    if test_tp_based_signal == 1:  # BUY
+                        test_tp = current_price * (1 + test_reduced_tp_pct / 100)
                         test_sl = current_price * 0.80  # 20% below
                     else:  # SELL
-                        test_tp = current_price * 0.90  # 10% below
+                        test_tp = current_price * (1 - test_reduced_tp_pct / 100)
+                        test_sl = current_price * 1.20  # 20% above
+                else:
+                    # Model signal matches TP-based signal - use normal TP/SL values
+                    if test_tp_based_signal == 1:  # BUY
+                        # Use model's TP or default to 10% above if too low
+                        if test_tp <= current_price:
+                            test_tp = current_price * 1.10  # 10% above
+                        test_sl = current_price * 0.80  # 20% below
+                    else:  # SELL
+                        # Use model's TP or default to 10% below if too high
+                        if test_tp >= current_price:
+                            test_tp = current_price * 0.90  # 10% below
                         test_sl = current_price * 1.20  # 20% above
                 
                 # Continue with test model comparison after adjustments
+                # Pass signal alignment info for test model
+                test_signal_aligned = not test_signal_mismatch  # True if signals match
                 test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc = calculate_trade_amount(
-                    test_confidence, usdt_balance, current_price, test_sl
+                    test_confidence, usdt_balance, current_price, test_sl, signal_aligned=test_signal_aligned
                 )
                 
                 # Display test model prediction
@@ -447,15 +498,21 @@ def main():
                 logging.info("\n🧪 Testing mode: Both models running in parallel. Using current model for trading.")
                 # Still execute trades with current model during testing if VERY high confidence
                 if confidence >= CONFIDENCE_THRESHOLD_TRADE:
-                    # Check if we should skip this trade due to existing BUY trade with higher entry
+                    # Check if we should skip this trade: only open new trade if entry is better than existing ones
                     should_skip = False
-                    if predicted_signal == 1:  # BUY signal
-                        for trade in trades_list:
-                            if trade['signal'] == 1:  # Existing BUY trade
-                                if current_price > trade['entry_price'] and confidence <= 0.85:
+                    for trade in trades_list:
+                        if trade['signal'] == predicted_signal:  # Same signal type
+                            if predicted_signal == 1:  # BUY - better entry = lower price
+                                if current_price >= trade['entry_price']:
                                     should_skip = True
                                     logging.info(f"⏭️  Skipping BUY trade: Existing BUY trade at ${trade['entry_price']:.2f}, "
-                                               f"new entry would be ${current_price:.2f} (higher) with confidence {confidence:.2f} <= 0.85")
+                                               f"new entry would be ${current_price:.2f} (not better - same or higher)")
+                                    break
+                            else:  # SELL - better entry = higher price
+                                if current_price <= trade['entry_price']:
+                                    should_skip = True
+                                    logging.info(f"⏭️  Skipping SELL trade: Existing SELL trade at ${trade['entry_price']:.2f}, "
+                                               f"new entry would be ${current_price:.2f} (not better - same or lower)")
                                     break
                     
                     if not should_skip:
@@ -470,15 +527,21 @@ def main():
                     logging.info(f"⏸️  Confidence {confidence:.2f} below trading threshold ({CONFIDENCE_THRESHOLD_TRADE}). Waiting for better signal.")
             elif confidence >= CONFIDENCE_THRESHOLD_TRADE:
                 # ONLY trade with high confidence (>70%) for futures
-                # Check if we should skip this trade due to existing BUY trade with higher entry
+                # Check if we should skip this trade: only open new trade if entry is better than existing ones
                 should_skip = False
-                if predicted_signal == 1:  # BUY signal
-                    for trade in trades_list:
-                        if trade['signal'] == 1:  # Existing BUY trade
-                            if current_price > trade['entry_price'] and confidence <= 0.85:
+                for trade in trades_list:
+                    if trade['signal'] == predicted_signal:  # Same signal type
+                        if predicted_signal == 1:  # BUY - better entry = lower price
+                            if current_price >= trade['entry_price']:
                                 should_skip = True
                                 logging.info(f"⏭️  Skipping BUY trade: Existing BUY trade at ${trade['entry_price']:.2f}, "
-                                           f"new entry would be ${current_price:.2f} (higher) with confidence {confidence:.2f} <= 0.85")
+                                           f"new entry would be ${current_price:.2f} (not better - same or higher)")
+                                break
+                        else:  # SELL - better entry = higher price
+                            if current_price <= trade['entry_price']:
+                                should_skip = True
+                                logging.info(f"⏭️  Skipping SELL trade: Existing SELL trade at ${trade['entry_price']:.2f}, "
+                                           f"new entry would be ${current_price:.2f} (not better - same or lower)")
                                 break
                 
                 if not should_skip:
@@ -498,6 +561,7 @@ def main():
                     # Start testing the new model
                     testing_model = True
                     testing_start_time = time.time()
+                    last_refinement_time = time.time()  # Update last refinement time
                     current_model_predictions = []
                     test_model_predictions = []
                     logging.info(f"🧪 Starting 3-minute testing phase - comparing models...")
@@ -516,12 +580,12 @@ def main():
             logging.error(f"An error occurred: {e}", exc_info=True)
             time.sleep(60)
 
-def calculate_trade_amount(confidence, balance, current_price, stop_loss):
+def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal_aligned=True):
     """
-    Calculate recommended trade amount based on confidence level.
-    Higher confidence = larger position size.
+    Calculate recommended trade amount based on confidence level and signal alignment.
+    Higher confidence with aligned signals (model signal matches TP-based signal) = larger position size.
     
-    Position sizing by confidence:
+    Base position sizing by confidence:
     - 1.0: 75% of balance
     - 0.95-0.999: 70% of balance
     - 0.90-0.95: 65% of balance
@@ -530,32 +594,53 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss):
     - 0.75-0.80: 35% of balance
     - 0.70-0.75: 25% of balance
     
+    When signals are aligned (model signal matches TP-based signal):
+    - Position size is increased by up to 25% based on confidence
+    - Higher confidence = larger multiplier
+    
+    When signals are mismatched:
+    - Position size is reduced by 50%
+    
     Args:
         confidence: Model confidence (0.0 to 1.0)
         balance: Available USDT balance
         current_price: Current BTC price
         stop_loss: Stop loss price (for reference, not used in calculation)
+        signal_aligned: True if model signal matches TP-based signal, False otherwise
     
     Returns           : 
     trade_percentage  : Percentage of balance to trade
     trade_amount_usdt : Amount in USDT
     trade_quantity_btc: Quantity in BTC
     """
-    # Confidence-based position sizing (% of balance to trade)
+    # Base confidence-based position sizing (% of balance to trade)
     if confidence >= 1.0:
-        trade_percentage = 75.0  # 75% of balance for perfect confidence (1.0)
+        base_percentage = 75.0  # 75% of balance for perfect confidence (1.0)
     elif confidence >= 0.95:
-        trade_percentage = 70.0  # 70% of balance for very high confidence (0.95-0.999)
+        base_percentage = 70.0  # 70% of balance for very high confidence (0.95-0.999)
     elif confidence >= 0.90:
-        trade_percentage = 65.0  # 65% of balance
+        base_percentage = 65.0  # 65% of balance
     elif confidence >= 0.85:
-        trade_percentage = 55.0  # 55% of balance (0.85-0.90)
+        base_percentage = 55.0  # 55% of balance (0.85-0.90)
     elif confidence >= 0.80:
-        trade_percentage = 45.0  # 45% of balance
+        base_percentage = 45.0  # 45% of balance
     elif confidence >= 0.75:
-        trade_percentage = 35.0  # 35% of balance
-    else             :       # 0.70 - 0.75
-        trade_percentage = 25.0  # 25% of balance for minimum confidence threshold
+        base_percentage = 35.0  # 35% of balance
+    else:  # 0.70 - 0.75
+        base_percentage = 25.0  # 25% of balance for minimum confidence threshold
+    
+    # Adjust position size based on signal alignment
+    if signal_aligned:
+        # Signals match - increase position size based on confidence
+        # Higher confidence = larger increase (up to 25% additional)
+        alignment_multiplier = 1.0 + (confidence * 0.25)  # 1.0 to 1.25 multiplier
+        trade_percentage = base_percentage * alignment_multiplier
+        # Cap at 95% of balance for safety
+        if trade_percentage > 95.0:
+            trade_percentage = 95.0
+    else:
+        # Signals mismatch - reduce position size by 50%
+        trade_percentage = base_percentage * 0.5
     
     # Calculate trade amount in USDT
     trade_amount_usdt = balance * (trade_percentage / 100)
@@ -574,8 +659,9 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss):
     actual_risk_usdt = trade_amount_usdt * (sl_distance_pct / 100)
     
     # Log risk management info
+    alignment_status = "ALIGNED" if signal_aligned else "MISMATCHED"
     logging.debug(
-        f"Position sizing: Conf={confidence:.2f}, Position={trade_percentage:.1f}%, "
+        f"Position sizing: Conf={confidence:.2f}, Signals={alignment_status}, Position={trade_percentage:.1f}%, "
         f"Trade=${trade_amount_usdt:.2f}, SL_dist={sl_distance_pct:.2f}%, Risk=${actual_risk_usdt:.2f}"
     )
     

@@ -13,20 +13,60 @@ class CryptoPredicter(nn.Module)                                                
 
         self.lstm = nn.LSTM(input_size, hidden_layer_size, num_layers, dropout=dropout, batch_first=True)
         
+            # Attention mechanism - learns to focus on important timesteps with bias toward recent
+        self.attention = nn.Sequential(
+            nn.Linear(hidden_layer_size, hidden_layer_size),
+            nn.Tanh(),
+            nn.Linear(hidden_layer_size, 1)
+        )
+        
+        # FC layer before output heads for better representation
+        self.fc_hidden = nn.Linear(hidden_layer_size, hidden_layer_size)
+        self.dropout_layer = nn.Dropout(dropout)
+        
         self.signal_head = nn.Linear(hidden_layer_size, 2)  # 0: sell, 1: buy
         self.tp_head = nn.Linear(hidden_layer_size, 1)
         self.sl_head = nn.Linear(hidden_layer_size, 1)
 
         # 2. Move model to the selected device
         self.to(self.device)
+        
+        # Time decay factor for attention (higher = more emphasis on recent)
+        self.time_decay_alpha = 3.0
 
     def forward(self, input_seq):
-        lstm_out, _ = self.lstm(input_seq)
-        last_hidden_state = lstm_out[:, -1, :]
+        # Get LSTM outputs for all timesteps
+        lstm_out, _ = self.lstm(input_seq)  # Shape: (batch, seq_len, hidden_size)
+        batch_size, seq_len, hidden_size = lstm_out.shape
         
-        signal      = self.signal_head(last_hidden_state)
-        take_profit = self.tp_head(last_hidden_state)
-        stop_loss   = self.sl_head(last_hidden_state)
+        # Calculate attention scores for each timestep
+        # Shape: (batch, seq_len, 1)
+        attention_scores = self.attention(lstm_out)
+        
+        # Add time-decay bias to favor more recent timesteps
+        # Create position weights: more recent = higher weight
+        positions = torch.linspace(0, 1, seq_len, device=self.device)  # 0 (oldest) to 1 (most recent)
+        time_bias = torch.exp(self.time_decay_alpha * (positions - 1))  # Exponential decay
+        time_bias = time_bias.unsqueeze(0).unsqueeze(-1)  # Shape: (1, seq_len, 1)
+        
+        # Combine learned attention with time decay bias
+        attention_scores = attention_scores + time_bias
+        
+        # Apply softmax to get attention weights (sum to 1)
+        attention_weights = F.softmax(attention_scores, dim=1)  # Shape: (batch, seq_len, 1)
+        
+        # Weighted sum of LSTM outputs using attention weights
+        # Shape: (batch, seq_len, hidden_size) * (batch, seq_len, 1) -> (batch, hidden_size)
+        attended_output = torch.sum(lstm_out * attention_weights, dim=1)  # Shape: (batch, hidden_size)
+        
+        # Pass through FC layer for better representation
+        fc_out = F.relu(self.fc_hidden(attended_output))
+        fc_out = self.dropout_layer(fc_out)
+        
+        # Generate predictions from attended representation
+        signal = self.signal_head(fc_out)
+        take_profit = self.tp_head(fc_out)
+        stop_loss = self.sl_head(fc_out)
         
         return F.softmax(signal, dim=1), take_profit, stop_loss
 

@@ -26,6 +26,7 @@ class DataProcessor:
         df['sma_5'] = df['close'].rolling(window=5).mean()
         df['sma_10'] = df['close'].rolling(window=10).mean()
         df['sma_20'] = df['close'].rolling(window=20).mean()
+        df['sma_100'] = df['close'].rolling(window=100).mean()
         df['ema_5'] = df['close'].ewm(span=5, adjust=False).mean()
         df['ema_10'] = df['close'].ewm(span=10, adjust=False).mean()
         
@@ -107,7 +108,7 @@ class DataProcessor:
         # Select feature columns (technical indicators)
         feature_columns = [
             'close', 'price_change', 'high_low_range', 'close_open_diff',
-            'sma_5', 'sma_10', 'sma_20', 'ema_5', 'ema_10',
+            'sma_5', 'sma_10', 'sma_20', 'sma_100', 'ema_5', 'ema_10',
             'rsi', 'macd', 'macd_signal', 'macd_diff',
             'bb_middle', 'bb_upper', 'bb_lower', 'bb_position',
             'volume_change', 'volume_ratio',
