@@ -273,12 +273,50 @@ def main():
             
             # Select the same features used in training
             feature_columns = [
-                'close', 'price_change', 'high_low_range', 'close_open_diff',
-                'sma_5', 'sma_10', 'sma_20', 'sma_100', 'ema_5', 'ema_10',
-                'rsi', 'macd', 'macd_signal', 'macd_diff',
-                'bb_middle', 'bb_upper', 'bb_lower', 'bb_position',
-                'volume_change', 'volume_ratio',
-                'momentum', 'rate_of_change', 'volatility'
+                # Basic prices
+                'open', 'high', 'low', 'close',
+                # Derived prices
+                'med', 'mid', 'typ', 'mean',
+                # Price-based features
+                'price_change', 'high_low_range', 'close_open_diff',
+                # Highest High / Lowest Low
+                'hh_14', 'll_14', 'hh_20', 'll_20',
+                # Moving Averages (SMA)
+                'sma_5', 'sma_10', 'sma_20', 'sma_50', 'sma_100', 'sma_200',
+                # Exponential Moving Averages (EMA)
+                'ema_5', 'ema_10', 'ema_20', 'ema_50', 'ema_100', 'ema_200',
+                # Advanced Moving Averages
+                'wma_14', 'wma_20', 'dema_14', 'tema_14', 'kama_14',
+                # Price vs MA/EMA ratios
+                'price_vs_sma20', 'price_vs_sma50', 'price_vs_sma100', 'price_vs_sma200',
+                'price_vs_ema20', 'price_vs_ema50', 'price_vs_ema100', 'price_vs_ema200',
+                # MA/EMA Crossovers
+                'sma5_sma20_cross', 'sma20_sma50_cross', 'sma50_sma200_cross',
+                'ema5_ema20_cross', 'ema20_ema50_cross', 'ema50_ema200_cross',
+                # Oscillators
+                'rsi', 'willr_14',
+                # MACD
+                'macd', 'macd_signal', 'macd_diff',
+                # PPO
+                'ppo', 'ppo_signal', 'ppo_hist',
+                # Stochastic
+                'fk_14', 'fd_14', 'sk_14', 'sd_14', 'stoch_k', 'stoch_d',
+                # DMI (Directional Movement Index)
+                'plus_dm', 'minus_dm', 'plus_di', 'minus_di', 'dx', 'adx', 'adxr', 'dmi_cross',
+                # Bollinger Bands
+                'bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'pctbb_20',
+                # CCI
+                'cci_20',
+                # Volume
+                'volume_change', 'volume_ratio', 'vwap', 'price_vs_vwap',
+                # Volume-based indicators
+                'mfi_14', 'ad', 'co',
+                # Momentum
+                'momentum', 'rate_of_change', 'price_acceleration',
+                # Volatility
+                'volatility', 'trange', 'atr', 'atr_pct', 'natr_14',
+                # Support/Resistance
+                'local_high', 'local_low', 'dist_to_high', 'dist_to_low'
             ]
             
             # Ensure we have enough data after indicator calculation
@@ -307,8 +345,17 @@ def main():
                 time.sleep(60)
                 continue
             
-            confidence       = signal_probs.max().item()
+            # Extract probabilities: signal_probs is softmax output [SELL_prob, BUY_prob]
+            signal_map = {0: 'SELL', 1: 'BUY'}  # Define signal map early
+            sell_prob = signal_probs[0][0].item()  # Probability of SELL
+            buy_prob = signal_probs[0][1].item()   # Probability of BUY
+            confidence = signal_probs.max().item()  # Maximum probability = confidence
             predicted_signal = signal.item()
+            
+            # Log detailed probability breakdown for debugging low confidence
+            if confidence < 0.75:  # Log when confidence is moderate/low
+                logging.debug(f"🔍 Low confidence breakdown: SELL={sell_prob:.3f}, BUY={buy_prob:.3f}, "
+                            f"Max (confidence)={confidence:.3f}, Predicted={signal_map[predicted_signal]}")
             
             # Check for early stops on active trades (before processing new predictions)
             # This allows us to use the predicted_signal to check for opposite signals
@@ -338,7 +385,7 @@ def main():
                     tp = current_price * 1.01
                     sl = current_price * 0.99
                 
-                signal_map = {0: 'SELL', 1: 'BUY'}
+                # signal_map already defined above
                 model_predicted_signal = predicted_signal  # Keep original model prediction
                 
                 # Focus trading on predicted TP: TP > entry → BUY, TP < entry → SELL
@@ -409,9 +456,13 @@ def main():
                 time.sleep(60)
                 continue
             
-            # Display current model prediction
-            logging.info(f"\n📊 Signal: {signal_map[predicted_signal]} | Confidence: {confidence:.2f} | "
-                        f"TP: ${tp:.2f} | SL: ${sl:.2f} | Trade: ${trade_amount_usdt:.2f} ({trade_percentage:.1f}%)")
+            # Display current model prediction with probability breakdown if confidence is low
+            if confidence < 0.75:
+                logging.info(f"\n📊 Signal: {signal_map[predicted_signal]} | Confidence: {confidence:.2f} (SELL: {sell_prob:.3f}, BUY: {buy_prob:.3f}) | "
+                            f"TP: ${tp:.2f} | SL: ${sl:.2f} | Trade: ${trade_amount_usdt:.2f} ({trade_percentage:.1f}%)")
+            else:
+                logging.info(f"\n📊 Signal: {signal_map[predicted_signal]} | Confidence: {confidence:.2f} | "
+                            f"TP: ${tp:.2f} | SL: ${sl:.2f} | Trade: ${trade_amount_usdt:.2f} ({trade_percentage:.1f}%)")
 
             # Track current model predictions during testing
             if testing_model:
@@ -493,12 +544,12 @@ def main():
                                test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc, usdt_balance)
                 
                 test_model_predictions.append({
-                    'signal': test_predicted_signal,
-                    'confidence': test_confidence,
+                    'signal'     : test_predicted_signal,
+                    'confidence' : test_confidence,
                     'entry_price': current_price,
-                    'tp': test_tp,
-                    'sl': test_sl,
-                    'timestamp': time.time()
+                    'tp'         : test_tp,
+                    'sl'         : test_sl,
+                    'timestamp'  : time.time()
                 })
 
             # Trading and Learning Logic - STRICT THRESHOLDS FOR FUTURES
@@ -506,7 +557,7 @@ def main():
                 logging.info("\n🧪 Testing mode: Both models running in parallel. Using current model for trading.")
                 # Still execute trades with current model during testing if VERY high confidence
                 if confidence >= CONFIDENCE_THRESHOLD_TRADE:
-                              # Check if we should skip this trade: only open new trade if entry is better OR confidence is higher (>=0.9)
+                                    # Check if we should skip this trade: only open new trade if entry is better OR confidence is higher (>=0.9)
                     should_skip = False
                     for trade in trades_list:
                         if trade['signal'] == predicted_signal:  # Same signal type
