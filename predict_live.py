@@ -75,8 +75,8 @@ def main():
     client = MEXCClient()
     exchange = Exchange()
     
-    look_back = 60
-    future_horizon = 15  # Look 15 minutes ahead for TP/SL predictions 
+    look_back      = 60
+    future_horizon = 1  # Look 10 minutes ahead for TP/SL predictions 
     
     # Track active trades for loss detection (now a list to support multiple trades)
     active_trades = []
@@ -163,7 +163,7 @@ def main():
             
             if df is None or df.empty:
                 logging.error("Failed to fetch market data. Skipping this cycle.")
-                time.sleep(60)
+                time.sleep(5)
                 continue
             
             # Immediately append new data to training_data.csv
@@ -210,7 +210,7 @@ def main():
                 trade_profit = is_trade_complete(trade, current_price)
                 
                 if trade_loss:
-                    # Use stored trade index if available, otherwise assign new one
+                          # Use stored trade index if available, otherwise assign new one
                     trade_index = trade.get('index', None)
                     if trade_index is None:
                         trade_counter += 1
@@ -268,7 +268,7 @@ def main():
                 df_with_indicators = temp_processor.calculate_technical_indicators(df)
             except Exception as e:
                 logging.error(f"Failed to calculate indicators: {e}", exc_info=True)
-                time.sleep(60)
+                time.sleep(5)
                 continue
             
             # Select the same features used in training
@@ -322,7 +322,7 @@ def main():
             # Ensure we have enough data after indicator calculation
             if len(df_with_indicators) < look_back:
                 logging.warning(f"Not enough data after indicators: {len(df_with_indicators)} < {look_back}. Skipping cycle.")
-                time.sleep(60)
+                time.sleep(5)
                 continue
             
             # Take the last look_back rows
@@ -333,7 +333,7 @@ def main():
                 features_scaled = scaler.transform(features)
             except Exception as e:
                 logging.error(f"Failed to scale features: {e}", exc_info=True)
-                time.sleep(60)
+                time.sleep(5)
                 continue
             
             # Create tensor with shape (1, look_back, num_features)
@@ -342,7 +342,7 @@ def main():
                 signal, signal_probs, tp_scaled, sl_scaled = model.predict(X_pred)
             except Exception as e:
                 logging.error(f"Failed to make prediction: {e}", exc_info=True)
-                time.sleep(60)
+                time.sleep(5)
                 continue
             
             # Extract probabilities: signal_probs is softmax output [SELL_prob, BUY_prob]
@@ -453,7 +453,7 @@ def main():
                 )
             except Exception as e:
                 logging.error(f"Failed to calculate trade amount: {e}", exc_info=True)
-                time.sleep(60)
+                time.sleep(5)
                 continue
             
             # Display current model prediction with probability breakdown if confidence is low
@@ -557,8 +557,10 @@ def main():
                 logging.info("\n🧪 Testing mode: Both models running in parallel. Using current model for trading.")
                 # Still execute trades with current model during testing if VERY high confidence
                 if confidence >= CONFIDENCE_THRESHOLD_TRADE:
-                                    # Check if we should skip this trade: only open new trade if entry is better OR confidence is higher (>=0.9)
+                    # Check if we should skip this trade: only open new trade if entry is better OR confidence is higher (>=0.9)
                     should_skip = False
+                    blocking_trades = []  # Trades that block this trade
+                    
                     for trade in trades_list:
                         if trade['signal'] == predicted_signal:  # Same signal type
                             existing_confidence = trade.get('confidence', 0.0)
@@ -571,18 +573,29 @@ def main():
                             
                             if entry_worse:
                                 # Entry is worse, but check if confidence is high enough to override
+                                # Requirement: if confidence >= 0.9 and > existing confidence, allow trade
                                 if confidence >= 0.9 and confidence > existing_confidence:
-                                    # High confidence and higher than existing - allow trade
-                                    logging.info(f"✅ Overriding worse entry: Confidence {confidence:.2f} >= 0.9 and higher than existing {existing_confidence:.2f}")
-                                    should_skip = False
-                                    break
+                                                # High confidence (>=0.9) and higher than this existing trade - can override
+                                    logging.info(f"✅ Can override worse entry: Confidence {confidence:.2f} >= 0.9 and higher than existing trade at ${trade['entry_price']:.2f} (conf: {existing_confidence:.2f})")
+                                    # Continue checking other trades - don't add to blocking
                                 else:
-                                    # Entry worse and not enough confidence to override
-                                    should_skip = True
-                                    logging.info(f"⏭️  Skipping {signal_map[predicted_signal]} trade: Existing trade at ${trade['entry_price']:.2f} "
-                                               f"(conf: {existing_confidence:.2f}), new entry would be ${current_price:.2f} "
-                                               f"(conf: {confidence:.2f}) - entry not better and confidence not high enough")
-                                    break
+                                    # Entry worse and not enough confidence to override this trade
+                                    blocking_trades.append(f"${trade['entry_price']:.2f} (conf: {existing_confidence:.2f})")
+                                    # Continue checking other trades
+                            # If entry is better (not worse), we don't add to blocking_trades, so trade will execute
+                    
+                    # Only skip if there are blocking trades (entry worse and confidence not high enough to override)
+                    if blocking_trades:
+                        should_skip = True
+                        logging.info(f"⏭️  Skipping {signal_map[predicted_signal]} trade: Entry ${current_price:.2f} worse than existing {', '.join(blocking_trades)}. "
+                                   f"Confidence {confidence:.2f} not high enough to override (need >=0.9 and > all existing)")
+                    elif not should_skip:
+                        # Check if we had any worse entries that were overridden
+                        worse_entries = [t for t in trades_list if t['signal'] == predicted_signal and 
+                                        ((predicted_signal == 1 and current_price >= t['entry_price']) or 
+                                         (predicted_signal == 0 and current_price <= t['entry_price']))]
+                        if worse_entries:
+                            logging.info(f"✅ Overriding worse entry: Confidence {confidence:.2f} >= 0.9 and higher than all existing trades")
                     
                     if not should_skip:
                         # Assign trade index when creating the trade
@@ -603,6 +616,8 @@ def main():
                 # ONLY trade with high confidence (>70%) for futures
                 # Check if we should skip this trade: only open new trade if entry is better OR confidence is higher (>=0.9)
                 should_skip = False
+                blocking_trades = []  # Trades that block this trade
+                
                 for trade in trades_list:
                     if trade['signal'] == predicted_signal:  # Same signal type
                         existing_confidence = trade.get('confidence', 0.0)
@@ -615,18 +630,29 @@ def main():
                         
                         if entry_worse:
                             # Entry is worse, but check if confidence is high enough to override
+                            # Requirement: if confidence >= 0.9 and > existing confidence, allow trade
                             if confidence >= 0.9 and confidence > existing_confidence:
-                                # High confidence and higher than existing - allow trade
-                                logging.info(f"✅ Overriding worse entry: Confidence {confidence:.2f} >= 0.9 and higher than existing {existing_confidence:.2f}")
-                                should_skip = False
-                                break
+                                # High confidence (>=0.9) and higher than this existing trade - can override
+                                logging.info(f"✅ Can override worse entry: Confidence {confidence:.2f} >= 0.9 and higher than existing trade at ${trade['entry_price']:.2f} (conf: {existing_confidence:.2f})")
+                                # Continue checking other trades - don't add to blocking
                             else:
-                                # Entry worse and not enough confidence to override
-                                should_skip = True
-                                logging.info(f"⏭️  Skipping {signal_map[predicted_signal]} trade: Existing trade at ${trade['entry_price']:.2f} "
-                                           f"(conf: {existing_confidence:.2f}), new entry would be ${current_price:.2f} "
-                                           f"(conf: {confidence:.2f}) - entry not better and confidence not high enough")
-                                break
+                                # Entry worse and not enough confidence to override this trade
+                                blocking_trades.append(f"${trade['entry_price']:.2f} (conf: {existing_confidence:.2f})")
+                                # Continue checking other trades
+                        # If entry is better (not worse), we don't add to blocking_trades, so trade will execute
+                
+                # Only skip if there are blocking trades (entry worse and confidence not high enough to override)
+                if blocking_trades:
+                    should_skip = True
+                    logging.info(f"⏭️  Skipping {signal_map[predicted_signal]} trade: Entry ${current_price:.2f} worse than existing {', '.join(blocking_trades)}. "
+                               f"Confidence {confidence:.2f} not high enough to override (need >=0.9 and > all existing)")
+                elif not should_skip:
+                    # Check if we had any worse entries that were overridden
+                    worse_entries = [t for t in trades_list if t['signal'] == predicted_signal and 
+                                    ((predicted_signal == 1 and current_price >= t['entry_price']) or 
+                                     (predicted_signal == 0 and current_price <= t['entry_price']))]
+                    if worse_entries:
+                        logging.info(f"✅ Overriding worse entry: Confidence {confidence:.2f} >= 0.9 and higher than all existing trades")
                 
                 if not should_skip:
                     # Assign trade index when creating the trade
@@ -663,11 +689,11 @@ def main():
                 save_stats(daily_stats)
 
             logging.info("Waiting for the next trading interval...")
-            time.sleep(60)
+            time.sleep(5)  # Check every 5 seconds
 
         except Exception as e:
             logging.error(f"An error occurred: {e}", exc_info=True)
-            time.sleep(60)
+            time.sleep(5)
 
 def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal_aligned=True):
     """
