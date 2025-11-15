@@ -35,7 +35,7 @@ First, you need to train the model using the historical data.
 ```bash
 python train.py
 ```
-This will fetch the latest historical data, train the model, and save `btc_predicter_model.pth`, `scaler.gz`, and `training_data.csv` to your project directory.
+This will fetch the latest historical Gold (XAUT/USDT) data, train the model, and save `btc_predicter_model.pth`, `scaler.gz`, and `training_data.csv` to your project directory.
 
 ### 5. Run Live Predictions
 Once the model is trained, you can start the live prediction engine.

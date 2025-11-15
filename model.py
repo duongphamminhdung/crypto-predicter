@@ -4,7 +4,7 @@ import numpy as np
 import torch.nn.functional as F
 
 class CryptoPredicter(nn.Module)                                                     : 
-    def __init__(self, input_size=22, hidden_layer_size=100, num_layers=2, dropout=0.2): 
+    def __init__(self, input_size=37, hidden_layer_size=100, num_layers=2, dropout=0.2): 
         super().__init__()
         # 1. Set up device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

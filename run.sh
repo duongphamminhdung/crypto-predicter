@@ -87,7 +87,7 @@ train_model() {
     
     print_info "Starting initial model training..."
     print_info "This will:"
-    print_info "  • Fetch 5000 minutes (~3.5 days) of BTC/USDT data"
+    print_info "  • Fetch 5000 minutes (~3.5 days) of XAUT/USDT (Gold) data"
     print_info "  • Calculate 22 technical indicators"
     print_info "  • Train LSTM model with 20 epochs"
     print_info "  • Save model as ../model/btc_predicter_model.pth"

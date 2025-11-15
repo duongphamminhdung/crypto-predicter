@@ -22,12 +22,33 @@ class DataProcessor:
         df['high_low_range'] = (df['high'] - df['low']) / df['close']
         df['close_open_diff'] = (df['close'] - df['open']) / df['open']
         
-        # Moving Averages
+        # Moving Averages (SMA - Simple Moving Average)
         df['sma_5'] = df['close'].rolling(window=5).mean()
         df['sma_10'] = df['close'].rolling(window=10).mean()
         df['sma_20'] = df['close'].rolling(window=20).mean()
+        df['sma_50'] = df['close'].rolling(window=50).mean()
+        df['sma_100'] = df['close'].rolling(window=100).mean()
+        
+        # Exponential Moving Averages (EMA)
         df['ema_5'] = df['close'].ewm(span=5, adjust=False).mean()
         df['ema_10'] = df['close'].ewm(span=10, adjust=False).mean()
+        df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+        df['ema_100'] = df['close'].ewm(span=100, adjust=False).mean()
+        
+        # Price vs MA/EMA ratios (relative position)
+        df['price_vs_sma20'] = df['close'] / (df['sma_20'] + 1e-10)
+        df['price_vs_sma50'] = df['close'] / (df['sma_50'] + 1e-10)
+        df['price_vs_sma100'] = df['close'] / (df['sma_100'] + 1e-10)
+        df['price_vs_ema20'] = df['close'] / (df['ema_20'] + 1e-10)
+        df['price_vs_ema50'] = df['close'] / (df['ema_50'] + 1e-10)
+        df['price_vs_ema100'] = df['close'] / (df['ema_100'] + 1e-10)
+        
+        # MA/EMA Crossovers
+        df['sma5_sma20_cross'] = (df['sma_5'] > df['sma_20']).astype(int)
+        df['sma20_sma50_cross'] = (df['sma_20'] > df['sma_50']).astype(int)
+        df['ema5_ema20_cross'] = (df['ema_5'] > df['ema_20']).astype(int)
+        df['ema20_ema50_cross'] = (df['ema_20'] > df['ema_50']).astype(int)
         
         # RSI (Relative Strength Index)
         delta = df['close'].diff()
@@ -107,10 +128,23 @@ class DataProcessor:
         # Select feature columns (technical indicators)
         feature_columns = [
             'close', 'price_change', 'high_low_range', 'close_open_diff',
-            'sma_5', 'sma_10', 'sma_20', 'ema_5', 'ema_10',
+            # Moving Averages
+            'sma_5', 'sma_10', 'sma_20', 'sma_50', 'sma_100',
+            # Exponential Moving Averages
+            'ema_5', 'ema_10', 'ema_20', 'ema_50', 'ema_100',
+            # Price vs MA/EMA ratios
+            'price_vs_sma20', 'price_vs_sma50', 'price_vs_sma100',
+            'price_vs_ema20', 'price_vs_ema50', 'price_vs_ema100',
+            # MA/EMA Crossovers
+            'sma5_sma20_cross', 'sma20_sma50_cross',
+            'ema5_ema20_cross', 'ema20_ema50_cross',
+            # Oscillators
             'rsi', 'macd', 'macd_signal', 'macd_diff',
+            # Bollinger Bands
             'bb_middle', 'bb_upper', 'bb_lower', 'bb_position',
+            # Volume
             'volume_change', 'volume_ratio',
+            # Momentum & Volatility
             'momentum', 'rate_of_change', 'volatility'
         ]
         

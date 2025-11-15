@@ -43,12 +43,12 @@ def main():
     # For fine-tuning with latest historical data, use more lenient parameters
     if is_fine_tuning:
             # Use smaller lookback and lower tp_sl_ratio to get more signals from latest data
-        print("🔧 Fine-tuning parameters: look_back=30, tp_sl_ratio=0.3, future_horizon=15 (more lenient for better signal generation)")
-        processor = DataProcessor(look_back=30, tp_sl_ratio=0.3, future_horizon=15)
+        print("🔧 Fine-tuning parameters: look_back=30, tp_sl_ratio=0.3, future_horizon=25 (more lenient for better signal generation)")
+        processor = DataProcessor(look_back=30, tp_sl_ratio=0.3, future_horizon=25)
     else:
-        # Use 60-minute lookback window and 15-minute future horizon for full training
-        print("🏗️  Training parameters: look_back=60, future_horizon=15 (predicting TP/SL for 15-minute window)")
-        processor = DataProcessor(look_back=60, future_horizon=15)
+        # Use 60-minute lookback window and 25-minute future horizon for full training
+        print("🏗️  Training parameters: look_back=60, future_horizon=25 (predicting TP/SL for 25-minute window, optimized for 10-30 min trading)")
+        processor = DataProcessor(look_back=60, future_horizon=25)
 
     # If no recent data, use the main training data file
     if df is None and os.path.exists('training_data.csv'):
@@ -66,7 +66,7 @@ def main():
             # Fetch new data to append
             last_timestamp = int(df.index[-1].timestamp())
             print("Fetching new data to append...")
-            new_df              = client.get_kline_data(symbol='BTC_USDT', interval='Min1', start=last_timestamp)
+            new_df              = client.get_kline_data(symbol='XAUT_USDT', interval='Min1', start=last_timestamp)
             new_df['open_time'] = pd.to_datetime(new_df['open_time'])
             new_df.set_index('open_time', inplace=True)
             
@@ -108,13 +108,13 @@ def main():
             
             if batch_num == 0:
                 # First batch - get most recent data (no time constraint)
-                batch_df = client.get_kline_data(symbol='BTC_USDT', interval='Min1')
+                batch_df = client.get_kline_data(symbol='XAUT_USDT', interval='Min1')
             else:
                 # Subsequent batches - get data before the oldest timestamp from previous batch
                 # Get the oldest time from the last batch (open_time is still a column at this point)
                 oldest_time = int(all_data[-1]['open_time'].iloc[0].timestamp())
                     # Get data ending before the oldest point we have
-                batch_df = client.get_kline_data(symbol='BTC_USDT', interval='Min1', end=oldest_time - 60)
+                batch_df = client.get_kline_data(symbol='XAUT_USDT', interval='Min1', end=oldest_time - 60)
             
             if batch_df is not None and not batch_df.empty:
                 # Keep as raw dataframe for now (open_time is a column)

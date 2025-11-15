@@ -74,9 +74,9 @@ def main():
     exchange = Exchange()
     
     look_back = 60
-    future_horizon = 15  # Look 15 minutes ahead for TP/SL predictions 
+    future_horizon = 25  # Look 25 minutes ahead for TP/SL predictions (10-30 min trading window) 
     
-    # Track active trades for loss detection (now a list to support multiple trades)
+            # Track active trades for loss detection (now a list to support multiple trades)
     active_trades = []
     simulated_trades = []  # Track simulated trades in TEST mode
     trade_counter = 0  # Counter for trade index
@@ -154,7 +154,7 @@ def main():
 
             # Fetch data for prediction - need extra for technical indicators
             # Futures API returns up to 2000 records, so we can get all we need in one request
-            df = client.get_kline_data(symbol='BTC_USDT', interval='Min1')  # Gets recent data
+            df = client.get_kline_data(symbol='XAUT_USDT', interval='Min1')  # Gets recent Gold/USDT data
             
             if df is None or df.empty:
                 logging.error("Failed to fetch market data. Skipping this cycle.")
@@ -233,10 +233,23 @@ def main():
             # Select the same features used in training
             feature_columns = [
                 'close', 'price_change', 'high_low_range', 'close_open_diff',
-                'sma_5', 'sma_10', 'sma_20', 'ema_5', 'ema_10',
+                # Moving Averages
+                'sma_5', 'sma_10', 'sma_20', 'sma_50', 'sma_100',
+                # Exponential Moving Averages
+                'ema_5', 'ema_10', 'ema_20', 'ema_50', 'ema_100',
+                # Price vs MA/EMA ratios
+                'price_vs_sma20', 'price_vs_sma50', 'price_vs_sma100',
+                'price_vs_ema20', 'price_vs_ema50', 'price_vs_ema100',
+                # MA/EMA Crossovers
+                'sma5_sma20_cross', 'sma20_sma50_cross',
+                'ema5_ema20_cross', 'ema20_ema50_cross',
+                # Oscillators
                 'rsi', 'macd', 'macd_signal', 'macd_diff',
+                # Bollinger Bands
                 'bb_middle', 'bb_upper', 'bb_lower', 'bb_position',
+                # Volume
                 'volume_change', 'volume_ratio',
+                # Momentum & Volatility
                 'momentum', 'rate_of_change', 'volatility'
             ]
             
@@ -465,13 +478,13 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss):
     Args:
         confidence: Model confidence (0.0 to 1.0)
         balance: Available USDT balance
-        current_price: Current BTC price
+        current_price: Current Gold (XAU) price
         stop_loss: Stop loss price (for reference, not used in calculation)
     
     Returns           : 
     trade_percentage  : Percentage of balance to trade
     trade_amount_usdt : Amount in USDT
-    trade_quantity_btc: Quantity in BTC
+    trade_quantity_btc: Quantity in XAU (Gold)
     """
     # Confidence-based position sizing (% of balance to trade)
     if confidence >= 1.0:
@@ -498,7 +511,7 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss):
         trade_amount_usdt = min_trade_amount
         trade_percentage = (trade_amount_usdt / balance * 100) if balance > 0 else 0
     
-    # Calculate quantity in BTC
+    # Calculate quantity in XAU (Gold)
     trade_quantity_btc = trade_amount_usdt / current_price
     
     # Calculate actual risk based on stop loss distance
@@ -523,7 +536,7 @@ def print_prediction(signal, confidence, tp, sl, trade_percentage, trade_amount_
     logging.info(f"\n--- TRADE RECOMMENDATION ---")
     logging.info(f"Current USDT Balance: ${balance:.2f}")
     logging.info(f"Recommended Trade Size: {trade_percentage:.1f}% of balance")
-    logging.info(f"Trade Amount: ${trade_amount_usdt:.2f} USDT ({trade_quantity_btc:.6f} BTC)")
+    logging.info(f"Trade Amount: ${trade_amount_usdt:.2f} USDT ({trade_quantity_btc:.6f} XAU)")
     logging.info(f"{'='*60}\n")
 
 def simulate_trade(signal, quantity, entry_price, tp, sl):
@@ -735,7 +748,7 @@ def execute_trade(signal, exchange, quantity, entry_price, tp, sl):
     logging.info(f"\n💰 Confidence >= 0.65. Placing {side} order.")
     # Note: For futures, you may need to use a different order placement method
     # This will depend on your Exchange class implementation for futures
-    exchange.place_order('BTC_USDT', 'MARKET', side, quantity)
+    exchange.place_order('XAUT_USDT', 'MARKET', side, quantity)
 
     # Calculate trade amounts
     trade_amount_usdt = quantity * entry_price
