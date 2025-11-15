@@ -486,7 +486,7 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss):
         trade_percentage = 45.0  # 45% of balance
     elif confidence >= 0.75:
         trade_percentage = 35.0  # 35% of balance
-    else:  # 0.70 - 0.75
+    else             :       # 0.70 - 0.75
         trade_percentage = 25.0  # 25% of balance for minimum confidence threshold
     
     # Calculate trade amount in USDT
