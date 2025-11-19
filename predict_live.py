@@ -20,6 +20,7 @@ import shutil
 LOG_FILE = "trading_bot.log"
 STATS_FILE = "trading_stats.json"
 TRADES_LOG_FILE = "trades_log.json"  # Separate file for individual trade logs
+CURRENT_TRADES_FILE = "current_trades.json"  # File to track current/open trades for persistence
 MODEL_DIR = "../model"  # Directory for saving/loading models and scalers
 # ═══════════════════════════════════════════════════════════
 
@@ -79,9 +80,9 @@ def main():
     future_horizon = 15  # Look 15 minutes ahead for TP/SL predictions 
     
     # Track active trades for loss detection (now a list to support multiple trades)
-    active_trades = []
-    simulated_trades = []  # Track simulated trades in TEST mode
-    trade_counter = 0  # Counter for trade index
+    # Load existing trades from file if available (for persistence across restarts)
+    active_trades, simulated_trades, trade_counter = load_current_trades()
+    logging.info(f"📂 Loaded {len(active_trades)} active trades and {len(simulated_trades)} simulated trades from {CURRENT_TRADES_FILE}")
     
     # Track model testing state
     testing_model = False
@@ -245,6 +246,9 @@ def main():
             for i in reversed(trades_to_remove):
                 trades_list.pop(i)
             
+                # Save current trades to file after checking for completion
+            save_current_trades(active_trades, simulated_trades, trade_counter)
+            
             # Display active trades summary
             if trades_list:
                 mode_label = "🧪 SIMULATED Trades" if TEST else "📊 Active Trades"
@@ -372,6 +376,8 @@ def main():
                             update_stats(daily_stats, 'LOSS', pnl)
                         trades_list.pop(i)
                         logging.info("🛑 Trade closed due to early stop condition")
+                        # Save current trades after closing
+                        save_current_trades(active_trades, simulated_trades, trade_counter)
                         break  # Only close one trade per cycle to avoid index issues
             
             # Use close_scaler for inverse transform of TP/SL
@@ -467,6 +473,8 @@ def main():
                     
                     trades_list.pop(risk_mgmt_index)
                     logging.info(f"🛡️ Risk management: Closed profitable trade due to opposite signal prediction")
+                    # Save current trades after closing
+                    save_current_trades(active_trades, simulated_trades, trade_counter)
                     # Continue to next cycle after closing trade
                     continue
             
@@ -624,6 +632,8 @@ def main():
                             new_trade = execute_trade(predicted_signal, exchange, trade_quantity_btc, current_price, tp, sl, confidence=confidence)
                             new_trade['index'] = trade_index  # Store index in trade
                             active_trades.append(new_trade)
+                        # Save current trades after opening new trade
+                        save_current_trades(active_trades, simulated_trades, trade_counter)
                 else:
                     logging.info(f"⏸️  Confidence {confidence:.2f} below trading threshold ({CONFIDENCE_THRESHOLD_TRADE}). Waiting for better signal.")
             elif confidence >= CONFIDENCE_THRESHOLD_TRADE:
@@ -668,6 +678,8 @@ def main():
                         new_trade = execute_trade(predicted_signal, exchange, trade_quantity_btc, current_price, tp, sl, confidence=confidence)
                         new_trade['index'] = trade_index  # Store index in trade
                         active_trades.append(new_trade)
+                    # Save current trades after opening new trade
+                    save_current_trades(active_trades, simulated_trades, trade_counter)
             elif confidence < CONFIDENCE_THRESHOLD_TEST:
                 # Trigger model testing and fine-tuning when confidence is below threshold
                 logging.info(f"\n⚠️ Confidence {confidence:.2f} below threshold ({CONFIDENCE_THRESHOLD_TEST})")
@@ -688,6 +700,10 @@ def main():
             # Save stats at the end of each cycle
             if not TEST:
                 save_stats(daily_stats)
+            
+            # Save current trades at the end of each cycle to ensure persistence
+            # (even if no trades changed, this updates the last_updated timestamp)
+            save_current_trades(active_trades, simulated_trades, trade_counter)
 
             logging.info("Waiting for the next trading interval...")
             time.sleep(60)
@@ -1378,6 +1394,131 @@ def retrain_with_recent_data(client):
         return
     
     logging.info("Fine-tuned model will enter testing phase.")
+
+def load_current_trades():
+    """
+    Load current/open trades from current_trades.json file.
+    This allows the bot to restore active trades after a restart.
+    
+    Returns:
+        tuple: (active_trades, simulated_trades, trade_counter)
+    """
+    active_trades = []
+    simulated_trades = []
+    trade_counter = 0
+    
+    if not os.path.exists(CURRENT_TRADES_FILE):
+        logging.info(f"📂 {CURRENT_TRADES_FILE} not found. Starting with empty trade lists.")
+        return active_trades, simulated_trades, trade_counter
+    
+    try:
+        with open(CURRENT_TRADES_FILE, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+            if not content or content == 'w':  # Handle corrupted file
+                logging.warning(f"⚠️ {CURRENT_TRADES_FILE} appears corrupted. Starting fresh.")
+                return active_trades, simulated_trades, trade_counter
+            
+            data = json.loads(content)
+            
+            # Load active trades (real trades)
+            if 'active_trades' in data and isinstance(data['active_trades'], list):
+                active_trades = data['active_trades']
+                # Ensure entry_time is float (timestamp)
+                for trade in active_trades:
+                    if 'entry_time' in trade and isinstance(trade['entry_time'], str):
+                        # Try to parse datetime string back to timestamp
+                        try:
+                            trade['entry_time'] = datetime.strptime(trade['entry_time'], '%Y-%m-%d %H:%M:%S').timestamp()
+                        except:
+                            logging.warning(f"Could not parse entry_time for trade. Using current time.")
+                            trade['entry_time'] = time.time()
+                    elif 'entry_time' not in trade:
+                        trade['entry_time'] = time.time()
+            
+            # Load simulated trades (test mode)
+            if 'simulated_trades' in data and isinstance(data['simulated_trades'], list):
+                simulated_trades = data['simulated_trades']
+                # Ensure entry_time is float (timestamp)
+                for trade in simulated_trades:
+                    if 'entry_time' in trade and isinstance(trade['entry_time'], str):
+                        try:
+                            trade['entry_time'] = datetime.strptime(trade['entry_time'], '%Y-%m-%d %H:%M:%S').timestamp()
+                        except:
+                            logging.warning(f"Could not parse entry_time for simulated trade. Using current time.")
+                            trade['entry_time'] = time.time()
+                    elif 'entry_time' not in trade:
+                        trade['entry_time'] = time.time()
+            
+            # Load trade counter
+            if 'trade_counter' in data:
+                trade_counter = int(data['trade_counter'])
+            
+            logging.info(f"✅ Successfully loaded {len(active_trades)} active trades and {len(simulated_trades)} simulated trades from {CURRENT_TRADES_FILE}")
+            if trade_counter > 0:
+                logging.info(f"📊 Trade counter restored to {trade_counter}")
+            
+    except (json.JSONDecodeError, ValueError, KeyError) as e:
+        logging.warning(f"⚠️ Could not parse {CURRENT_TRADES_FILE}: {e}. Starting with empty trade lists.")
+        return active_trades, simulated_trades, trade_counter
+    except Exception as e:
+        logging.error(f"Error loading {CURRENT_TRADES_FILE}: {e}", exc_info=True)
+        return active_trades, simulated_trades, trade_counter
+    
+    return active_trades, simulated_trades, trade_counter
+
+def save_current_trades(active_trades, simulated_trades, trade_counter):
+    """
+    Save current/open trades to current_trades.json file.
+    This allows the bot to restore active trades after a restart.
+    
+    Args:
+        active_trades: List of active real trades
+        simulated_trades: List of active simulated trades (test mode)
+        trade_counter: Current trade counter value
+    """
+    try:
+        # Prepare data structure
+        data = {
+            'active_trades': [],
+            'simulated_trades': [],
+            'trade_counter': trade_counter,
+            'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # Convert active trades to JSON-serializable format
+        for trade in active_trades:
+            trade_copy = trade.copy()
+            # Convert entry_time to string for JSON serialization
+            if 'entry_time' in trade_copy:
+                trade_copy['entry_time'] = datetime.fromtimestamp(trade_copy['entry_time']).strftime('%Y-%m-%d %H:%M:%S')
+            # Ensure all numeric values are float (not numpy types)
+            for key in ['entry_price', 'tp', 'sl', 'quantity', 'trade_amount_usdt', 
+                       'expected_profit_usdt', 'expected_loss_usdt', 'confidence']:
+                if key in trade_copy and trade_copy[key] is not None:
+                    trade_copy[key] = float(trade_copy[key])
+            data['active_trades'].append(trade_copy)
+        
+        # Convert simulated trades to JSON-serializable format
+        for trade in simulated_trades:
+            trade_copy = trade.copy()
+            # Convert entry_time to string for JSON serialization
+            if 'entry_time' in trade_copy:
+                trade_copy['entry_time'] = datetime.fromtimestamp(trade_copy['entry_time']).strftime('%Y-%m-%d %H:%M:%S')
+            # Ensure all numeric values are float (not numpy types)
+            for key in ['entry_price', 'tp', 'sl', 'quantity', 'trade_amount_usdt', 
+                       'expected_profit_usdt', 'expected_loss_usdt', 'confidence']:
+                if key in trade_copy and trade_copy[key] is not None:
+                    trade_copy[key] = float(trade_copy[key])
+            data['simulated_trades'].append(trade_copy)
+        
+        # Save to file
+        with open(CURRENT_TRADES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        logging.debug(f"💾 Saved {len(active_trades)} active trades and {len(simulated_trades)} simulated trades to {CURRENT_TRADES_FILE}")
+        
+    except Exception as e:
+        logging.error(f"Error saving {CURRENT_TRADES_FILE}: {e}", exc_info=True)
 
 def load_stats():
     """Load daily stats from JSON file."""
