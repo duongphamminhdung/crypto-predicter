@@ -17,11 +17,11 @@ import shutil
 # ═══════════════════════════════════════════════════════════
 # 📝 LOGGING & STATS CONFIGURATION
 # ═══════════════════════════════════════════════════════════
-LOG_FILE = "trading_bot.log"
-STATS_FILE = "trading_stats.json"
-TRADES_LOG_FILE = "trades_log.json"  # Separate file for individual trade logs
+LOG_FILE            = "trading_bot.log"
+STATS_FILE          = "trading_stats.json"
+TRADES_LOG_FILE     = "trades_log.json"      # Separate file for individual trade logs
 CURRENT_TRADES_FILE = "current_trades.json"  # File to track current/open trades for persistence
-MODEL_DIR = "../model"  # Directory for saving/loading models and scalers
+MODEL_DIR           = "../model"             # Directory for saving/loading models and scalers
 # ═══════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════
