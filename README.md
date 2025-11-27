@@ -9,11 +9,11 @@ This project utilizes a custom **Transformer** architecture (replacing the previ
 ## ✨ Key Features
 
 ### 🧠 Advanced AI Model
-*   **Transformer Architecture**: Uses Multi-Head Self-Attention and Positional Encoding to capture complex temporal dependencies better than traditional RNNs/LSTMs.
-*   **Comprehensive Input**: Analyzes **93 technical indicators** including RSI, MACD, Bollinger Bands, Ichimoku Cloud, Volume patterns, and more.
-*   **Multi-Objective Output**: Simultaneously predicts:
-    *   **Direction**: BUY/SELL signal probability.
-    *   **Targets**: Dynamic Take Profit (TP) and Stop Loss (SL) levels optimized for the current volatility.
+* **Transformer Architecture**: Uses Multi-Head Self-Attention and Positional Encoding to capture complex temporal dependencies better than traditional RNNs/LSTMs.
+* **Comprehensive Input**     : Analyzes **93 technical indicators** including RSI, MACD, Bollinger Bands, Ichimoku Cloud, Volume patterns, and more.
+* **Multi-Objective Output**  : Simultaneously predicts                           : 
+* **Direction**               : BUY/SELL signal probability.
+* **Targets**                 : Dynamic Take Profit (TP) and Stop Loss (SL) levels optimized for the current volatility.
 
 ### 🔄 Adaptive & Self-Healing
 *   **Online Learning**: The bot automatically retrains itself every hour (or after a losing trade) using the most recent market data to adapt to new trends.
