@@ -1,0 +1,35 @@
+{
+  "active_trades": [],
+  "simulated_trades": [
+    {
+      "signal": 0,
+      "entry_price": 90764.6,
+      "tp": 87090.875,
+      "sl": 108917.52,
+      "side": "SELL",
+      "entry_time": "2025-11-27 20:45:12",
+      "quantity": 0.010328916780330656,
+      "trade_amount_usdt": 937.5,
+      "expected_profit_usdt": 37.945599798820304,
+      "expected_loss_usdt": 187.49999999999997,
+      "confidence": 1.0,
+      "index": 1
+    },
+    {
+      "signal": 0,
+      "entry_price": 90771.7,
+      "tp": 87572.765625,
+      "sl": 108926.04,
+      "side": "SELL",
+      "entry_time": "2025-11-27 20:50:20",
+      "quantity": 0.010328108870936646,
+      "trade_amount_usdt": 937.5,
+      "expected_profit_usdt": 33.038942495981644,
+      "expected_loss_usdt": 187.49999999999997,
+      "confidence": 1.0,
+      "index": 2
+    }
+  ],
+  "trade_counter": 2,
+  "last_updated": "2025-11-27 20:50:20"
+}

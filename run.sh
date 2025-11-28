@@ -87,10 +87,10 @@ train_model() {
     
     print_info "Starting initial model training..."
     print_info "This will:"
-    print_info "  • Fetch 5000 minutes (~3.5 days) of BTC/USDT data"
-    print_info "  • Calculate 22 technical indicators"
-    print_info "  • Train LSTM model with 20 epochs"
-    print_info "  • Save model as ../model/btc_predicter_model.pth"
+    print_info "  • Fetch ~100,000 minutes (~2 months) of BTC/USDT Min1 data"
+    print_info "  • Calculate 90+ technical indicators & features"
+    print_info "  • Train a 4-layer Transformer model for 20 epochs"
+    print_info "  • Save weights to ../model/btc_predicter_model.pth"
     echo ""
     
     $PYTHON_CMD train.py

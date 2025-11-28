@@ -9,6 +9,9 @@ import sys
 
 # Model directory for saving/loading models and scalers
 MODEL_DIR = "../model"
+FINE_TUNE_LOOKBACK = 30
+FINE_TUNE_FUTURE_HORIZON = 15
+FINE_TUNE_TP_SL_RATIO = 0.3
 
 def main():
     # Create model directory if it doesn't exist
@@ -43,12 +46,19 @@ def main():
     # For fine-tuning with latest historical data, use more lenient parameters
     if is_fine_tuning:
             # Use smaller lookback and lower tp_sl_ratio to get more signals from latest data
-        print("🔧 Fine-tuning parameters: look_back=30, tp_sl_ratio=0.3, future_horizon=15 (more lenient for better signal generation)")
-        processor = DataProcessor(look_back=30, tp_sl_ratio=0.3, future_horizon=15)
+        print(f"🔧 Fine-tuning parameters: look_back={FINE_TUNE_LOOKBACK}, tp_sl_ratio={FINE_TUNE_TP_SL_RATIO}, future_horizon={FINE_TUNE_FUTURE_HORIZON} (more lenient for better signal generation)")
+        processor = DataProcessor(
+            look_back=FINE_TUNE_LOOKBACK,
+            tp_sl_ratio=FINE_TUNE_TP_SL_RATIO,
+            future_horizon=FINE_TUNE_FUTURE_HORIZON
+        )
     else:
-        # Use 60-minute lookback window and 15-minute future horizon for full training
-        print("🏗️  Training parameters: look_back=60, future_horizon=15 (predicting TP/SL for 15-minute window)")
-        processor = DataProcessor(look_back=60, future_horizon=15)
+        # Use 60-minute lookback window and 240-minute (4h) future horizon for full training
+        print("🏗️  Training parameters")
+        print("   • look_back      : 60 minutes")
+        print("   • future_horizon : 240 minutes (4h)")
+        print("   • tp_sl_ratio    : 0.5% move threshold")
+        processor = DataProcessor(look_back=60, future_horizon=240, tp_sl_ratio=0.5)
 
     # If no recent data, use the main training data file
     if df is None and os.path.exists('training_data.csv'):
@@ -93,12 +103,14 @@ def main():
         print("=" * 60)
         print("Fetching initial training data")
         print("MEXC Futures API returns up to 2000 records per request, fetching multiple batches...")
-        print(f"Target: 50000 records (~35 days of 1-minute data)")
+        print(f"Target: 100000 records (~2 months of 1-minute data)")
         print("=" * 60)
         
         # MEXC Futures API returns up to 2000 records per request
         all_data = []
-        total_to_fetch = 70000  # Use 500000 lines for initial training
+        # 2 months = 60 days * 24 hours * 60 minutes = 86,400 records
+        # Fetching a bit more to be safe
+        total_to_fetch = 100000  
         
         # Calculate batches needed (2000 records per batch)
         batches_needed = (total_to_fetch + 1999) // 2000  # Ceiling division
@@ -164,11 +176,22 @@ def main():
 
     # Process data for training (this also calculates technical indicators)
     print("\nProcessing data for training...")
-    X_train, y_train_signal, y_train_tp, y_train_sl, _, _, _, _ = processor.get_train_test_data(labeled_df)
+    try:
+        X_train, y_train_signal, y_train_tp, y_train_sl, X_test, y_test_signal, y_test_tp, y_test_sl = processor.get_train_test_data(labeled_df)
+    except Exception as e:
+        print(f"❌ Data processing failed: {e}")
+        raise
     print("✅ Data processing complete.")
+    if processor.input_size:
+        print(f"   • Features used  : {processor.input_size}")
+    print(f"   • Train sequences: {len(X_train)}")
+    print(f"   • Test sequences : {len(X_test)}")
 
     # Build and train model
-    predicter = CryptoPredicter()
+    model_input_size = processor.input_size or X_train.shape[-1]
+    print("\n🧠 Building Transformer model...")
+    print(f"   • Input features : {model_input_size}")
+    predicter = CryptoPredicter(input_size=model_input_size)
     
     # Check if this is fine-tuning mode
     if is_fine_tuning:
@@ -182,13 +205,22 @@ def main():
             print("⚠️  Warning: No existing model found. Training from scratch.")
         
         print("🎯 Fine-tuning with latest historical data (time-weighted)...")
-        # 40 epochs for fine-tuning, with time weighting, lower learning rate
-        predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, epochs=50, lr=0.0001, time_weighted=True)
-        print("✅ Fine-tuning complete.")
+        try:
+            predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, epochs=5, lr=0.0001, time_weighted=True)
+            print("✅ Fine-tuning complete.")
+        except ValueError as err:
+            if "Not enough data" in str(err):
+                print(f"⚠️ Fine-tuning skipped: {err}")
+                return
+            print(f"❌ Fine-tuning failed: {err}")
+            raise
+        except Exception as e:
+            print(f"❌ Fine-tuning failed: {e}")
+            raise
     else:
         # Initial training from scratch
         print("🏗️  Training model from scratch...")
-        predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, epochs=100, lr=0.0005, time_weighted=False)
+        predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, epochs=20, lr=0.0005, time_weighted=False)
         print("✅ Model training complete.")
 
     # Save the trained model and the scaler

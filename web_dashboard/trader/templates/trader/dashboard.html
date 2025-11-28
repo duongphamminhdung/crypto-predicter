@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MEXC Clone - AI Trading Bot</title>
+    <style>
+        :root {
+            --bg-color: #12161c;
+            --panel-color: #1e2329;
+            --text-primary: #eaecef;
+            --text-secondary: #848e9c;
+            --border-color: #2b3139;
+            --green: #0ecb81;
+            --red: #f6465d;
+            --header-height: 50px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Header */
+        header {
+            height: var(--header-height);
+            background-color: var(--panel-color);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+            justify-content: space-between;
+        }
+
+        .logo {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #2ebd85; /* MEXC-like green logo color */
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .logo span {
+            color: var(--text-primary);
+        }
+
+        .stats-bar {
+            display: flex;
+            gap: 20px;
+            font-size: 0.9rem;
+        }
+
+        .stat-item span:first-child {
+            color: var(--text-secondary);
+            margin-right: 5px;
+        }
+
+        /* Main Layout */
+        .main-container {
+            display: flex;
+            flex: 1;
+            height: calc(100vh - var(--header-height));
+        }
+
+        /* Left Column: Chart & Active Trades */
+        .left-col {
+            flex: 3;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid var(--border-color);
+        }
+
+        .chart-container {
+            flex: 2;
+            background-color: var(--bg-color);
+            position: relative;
+        }
+
+        .active-trades-container {
+            flex: 1;
+            background-color: var(--panel-color);
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .panel-header {
+            padding: 10px 15px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-secondary);
+        }
+
+        /* Right Column: Past Trades */
+        .right-col {
+            flex: 1;
+            background-color: var(--panel-color);
+            display: flex;
+            flex-direction: column;
+            min-width: 300px;
+            max-width: 400px;
+        }
+
+        /* Tables */
+        .table-wrapper {
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+
+        th {
+            position: sticky;
+            top: 0;
+            background-color: var(--panel-color);
+            color: var(--text-secondary);
+            text-align: left;
+            padding: 8px 12px;
+            font-weight: normal;
+        }
+
+        td {
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .text-green { color: var(--green); }
+        .text-red { color: var(--red); }
+        .text-right { text-align: right; }
+        
+        tr:hover {
+            background-color: #2b3139;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg-color);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #474d57;
+            border-radius: 3px;
+        }
+
+        .status-badge {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+        }
+        .status-simulated {
+            background-color: #4a4a4a;
+            color: #fff;
+        }
+        .status-live {
+            background-color: var(--green);
+            color: #000;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo">
+            MEXC <span>Future-AI</span>
+        </div>
+        <div class="stats-bar">
+            <div class="stat-item">
+                <span>Date:</span> {{ daily_stats.date }}
+            </div>
+            <div class="stat-item">
+                <span>Win Rate:</span> 
+                <span class="{% if daily_stats.win_rate_pct >= 50 %}text-green{% else %}text-red{% endif %}">
+                    {{ daily_stats.win_rate_pct|floatformat:1 }}%
+                </span>
+            </div>
+            <div class="stat-item">
+                <span>Total P&L:</span> 
+                <span class="{% if daily_stats.total_profit_usdt >= 0 %}text-green{% else %}text-red{% endif %}">
+                    ${{ daily_stats.total_profit_usdt|floatformat:2 }}
+                </span>
+            </div>
+        </div>
+        <div>
+            <!-- User menu placeholder -->
+        </div>
+    </header>
+
+    <div class="main-container">
+        <!-- Left Column -->
+        <div class="left-col">
+            <!-- TradingView Chart -->
+            <div class="chart-container">
+                <!-- TradingView Widget BEGIN -->
+                <div class="tradingview-widget-container" style="height:100%;width:100%">
+                    <div id="tradingview_chart" style="height:100%;width:100%"></div>
+                    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+                    <script type="text/javascript">
+                    new TradingView.widget(
+                    {
+                    "autosize": true,
+                    "symbol": "MEXC:BTCUSDT.P",
+                    "interval": "1",
+                    "timezone": "Etc/UTC",
+                    "theme": "dark",
+                    "style": "1",
+                    "locale": "en",
+                    "enable_publishing": false,
+                    "allow_symbol_change": true,
+                    "container_id": "tradingview_chart"
+                    }
+                    );
+                    </script>
+                </div>
+                <!-- TradingView Widget END -->
+            </div>
+
+            <!-- Active Trades / Positions -->
+            <div class="active-trades-container">
+                <div class="panel-header">
+                    Active Positions ({{ active_trades|length }})
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Side</th>
+                                <th>Size (BTC)</th>
+                                <th>Entry Price</th>
+                                <th>Mark Price</th>
+                                <th>TP / SL</th>
+                                <th class="text-right">Unrealized PNL</th>
+                                <th>Type</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for trade in active_trades %}
+                            <tr>
+                                <td>BTCUSDT</td>
+                                <td class="{% if trade.side == 'BUY' %}text-green{% else %}text-red{% endif %}">
+                                    {{ trade.side }}
+                                </td>
+                                <td>{{ trade.quantity|floatformat:4 }}</td>
+                                <td>{{ trade.entry_price|floatformat:1 }}</td>
+                                <td>{{ trade.current_price|floatformat:1 }}</td> <!-- Note: View might need to pass current price or handle it -->
+                                <td>
+                                    <span class="text-green">{{ trade.tp|floatformat:1 }}</span> / 
+                                    <span class="text-red">{{ trade.sl|floatformat:1 }}</span>
+                                </td>
+                                <td class="text-right {% if trade.unrealized_pnl_usdt >= 0 %}text-green{% else %}text-red{% endif %}">
+                                    {{ trade.unrealized_pnl_usdt|floatformat:2 }} USDT <br>
+                                    <small>({{ trade.unrealized_pnl_percentage|floatformat:2 }}%)</small>
+                                </td>
+                                <td>
+                                    {% if trade.is_simulated %}
+                                    <span class="status-badge status-simulated">TEST</span>
+                                    {% else %}
+                                    <span class="status-badge status-live">LIVE</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="8" style="text-align: center; color: var(--text-secondary); padding: 20px;">
+                                    No active positions
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column: Past Trades -->
+        <div class="right-col">
+            <div class="panel-header" style="display: flex; justify-content: space-between;">
+                <span>Trade History</span>
+                <span>Logs</span>
+            </div>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Price(USDT)</th>
+                            <th class="text-right">Amount(PNL)</th>
+                            <th class="text-right">Time</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for trade in trades_history %}
+                        <tr>
+                            <td>
+                                <div style="font-weight: bold;">{{ trade.entry_price|floatformat:1 }}</div>
+                                <small class="{% if trade.side == 'BUY' %}text-green{% else %}text-red{% endif %}">{{ trade.side }}</small>
+                            </td>
+                            <td class="text-right">
+                                <div class="{% if trade.profit_loss_result == 'PROFIT' %}text-green{% else %}text-red{% endif %}">
+                                    {{ trade.pl_in_dollar|floatformat:2 }} $
+                                </div>
+                                <small style="color: var(--text-secondary);">{{ trade.pl_percentage|floatformat:2 }}%</small>
+                            </td>
+                            <td class="text-right" style="color: var(--text-secondary);">
+                                {{ trade.time_stamp|slice:"11:19" }}
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="3" style="text-align: center; color: var(--text-secondary); padding: 20px;">
+                                No history yet
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Simple auto-refresh every 30 seconds to get new data
+        setTimeout(function(){
+           window.location.reload();
+        }, 30000);
+    </script>
+</body>
+</html>
+

@@ -4,11 +4,12 @@ import torch
 import pandas as pd
 
 class DataProcessor:
-    def __init__(self, look_back=60, future_horizon=15, tp_sl_ratio=0.5):
+    def __init__(self, look_back=60, future_horizon=240, tp_sl_ratio=0.5):
         self.look_back = look_back
-        self.future_horizon = future_horizon  # Look 15 minutes ahead for TP/SL targets
-        self.tp_sl_ratio = tp_sl_ratio  # Set to 0.5 for high sensitivity (0.5% moves)
+        self.future_horizon = future_horizon  # Look 240 minutes (4 hours) ahead
+        self.tp_sl_ratio = tp_sl_ratio  # Set to 0.3% sensitivity
         self.scaler = MinMaxScaler(feature_range=(0, 1))
+        self.input_size = None  # Will be set after feature selection
     
     def calculate_technical_indicators(self, df):
         """
@@ -72,19 +73,6 @@ class DataProcessor:
         ema_ema_ema_14 = ema_ema_14.ewm(span=14, adjust=False).mean()
         df['tema_14'] = 3 * ema_14 - 3 * ema_ema_14 + ema_ema_ema_14
         
-        # Kaufman Adaptive Moving Average (KAMA)
-        def kama(series, period=14, fast=2, slow=30):
-            change = abs(series - series.shift(period))
-            volatility = series.diff().abs().rolling(window=period).sum()
-            efficiency_ratio = change / (volatility + 1e-10)
-            smoothing_constant = (efficiency_ratio * (2.0 / (fast + 1) - 2.0 / (slow + 1)) + 2.0 / (slow + 1)) ** 2
-            kama_values = pd.Series(index=series.index, dtype=float)
-            kama_values.iloc[0] = series.iloc[0]
-            for i in range(1, len(series)):
-                kama_values.iloc[i] = kama_values.iloc[i-1] + smoothing_constant.iloc[i] * (series.iloc[i] - kama_values.iloc[i-1])
-            return kama_values
-        df['kama_14'] = kama(df['close'], period=14)
-        
         # Price position relative to moving averages (normalized)
         df['price_vs_sma20'] = (df['close'] - df['sma_20']) / (df['sma_20'] + 1e-10)
         df['price_vs_sma50'] = (df['close'] - df['sma_50']) / (df['sma_50'] + 1e-10)
@@ -112,11 +100,11 @@ class DataProcessor:
         df['rsi'] = 100 - (100 / (1 + rs))
         
         # MACD
-        ema_12 = df['close'].ewm(span=12, adjust=False).mean()
-        ema_26 = df['close'].ewm(span=26, adjust=False).mean()
-        df['macd'] = ema_12 - ema_26  # MACD - Moving Average Convergence/Divergence
-        df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()  # MACDS - MACD Signal
-        df['macd_diff'] = df['macd'] - df['macd_signal']  # MACDH - MACD Histogram
+        ema_12            = df['close'].ewm(span=12, adjust=False).mean()
+        ema_26            = df['close'].ewm(span=26, adjust=False).mean()
+        df['macd']        = ema_12 - ema_26                                # MACD - Moving Average Convergence/Divergence
+        df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()    # MACDS - MACD Signal
+        df['macd_diff']   = df['macd'] - df['macd_signal']                 # MACDH - MACD Histogram
         
         # Percentage Price Oscillator (PPO) - percentage difference between EMAs
         df['ppo'] = ((ema_12 - ema_26) / ema_26) * 100  # PPO - Percentage Price Oscillator
@@ -242,7 +230,18 @@ class DataProcessor:
         df['dist_to_high'] = (df['close'] - df['local_high']) / (df['local_high'] + 1e-10)
         df['dist_to_low'] = (df['close'] - df['local_low']) / (df['local_low'] + 1e-10)
         
+        # Replace inf values before dropping NaNs
+        df = df.replace([np.inf, -np.inf], np.nan)
+        
         # Drop NaN values created by indicators
+        # DEBUG: Check for columns with excessive NaNs
+        null_counts = df.isnull().sum()
+        high_null_cols = null_counts[null_counts > 250]
+        if not high_null_cols.empty:
+            print(f"⚠️  Columns with >250 NaNs: \n{high_null_cols}")
+            # Drop problematic columns to avoid losing entire dataset when calling dropna()
+            df = df.drop(columns=high_null_cols.index, errors='ignore')
+        
         df = df.dropna()
         
         return df
@@ -296,7 +295,7 @@ class DataProcessor:
             # Exponential Moving Averages (EMA)
             'ema_5', 'ema_10', 'ema_20', 'ema_50', 'ema_100', 'ema_200',
             # Advanced Moving Averages
-            'wma_14', 'wma_20', 'dema_14', 'tema_14', 'kama_14',
+            'wma_14', 'wma_20', 'dema_14', 'tema_14',
             # Price vs MA/EMA ratios
             'price_vs_sma20', 'price_vs_sma50', 'price_vs_sma100', 'price_vs_sma200',
             'price_vs_ema20', 'price_vs_ema50', 'price_vs_ema100', 'price_vs_ema200',
@@ -321,21 +320,32 @@ class DataProcessor:
             'volume_change', 'volume_ratio', 'vwap', 'price_vs_vwap',
             # Volume-based indicators
             'mfi_14', 'ad', 'co',
-            # Momentum
+              # Momentum
             'momentum', 'rate_of_change', 'price_acceleration',
             # Volatility
             'volatility', 'trange', 'atr', 'atr_pct', 'natr_14',
-            # Support/Resistance
+              # Support/Resistance
             'local_high', 'local_low', 'dist_to_high', 'dist_to_low'
         ]
         
+        # Ensure requested features exist (some indicators may be dropped due to NaNs)
+        available_columns = [col for col in feature_columns if col in df_filtered.columns]
+        missing_columns = [col for col in feature_columns if col not in available_columns]
+        if missing_columns:
+            print(f"⚠️  Dropping missing feature columns: {missing_columns}")
+        if not available_columns:
+            raise ValueError("No feature columns available after preprocessing. Please review indicator configuration.")
+        
+        # Store final feature count for downstream components (e.g., model input size)
+        self.input_size = len(available_columns)
+        
         # Extract and scale features
-        data = df_filtered[feature_columns].values
+        data = df_filtered[available_columns].values
         self.scaler.fit(data)
         scaled_data = self.scaler.transform(data)
         
         # Create a NEW DataFrame with scaled features and reset index
-        df_filtered_scaled = pd.DataFrame(scaled_data, columns=feature_columns)
+        df_filtered_scaled = pd.DataFrame(scaled_data, columns=available_columns)
         df_filtered_scaled['signal'] = df_filtered['signal'].values
         df_filtered_scaled['take_profit'] = df_filtered['take_profit'].values
         df_filtered_scaled['stop_loss'] = df_filtered['stop_loss'].values
@@ -349,11 +359,11 @@ class DataProcessor:
         print(f"Train set: {train_size} samples, Test set: {len(df_filtered_scaled) - train_size} samples")
         
         X_train, y_train_signal, y_train_tp, y_train_sl = self._create_dataset(
-            df_filtered_scaled.iloc[:train_size], feature_columns
+            df_filtered_scaled.iloc[:train_size], available_columns
         )
         
         X_test, y_test_signal, y_test_tp, y_test_sl = self._create_dataset(
-            df_filtered_scaled.iloc[train_size:], feature_columns
+            df_filtered_scaled.iloc[train_size:], available_columns
         )
         
         print(f"Created {len(X_train)} training sequences and {len(X_test)} test sequences")
@@ -396,23 +406,31 @@ class DataProcessor:
         df['take_profit'] = df['close']
         df['stop_loss'] = df['close']
 
-        for i in range(len(df) - self.future_horizon):
-            # Use .iloc for position-based indexing
-            future_prices = df['close'].iloc[i+1:i+1+self.future_horizon]
-            current_price = df['close'].iloc[i]
-            
-            if future_prices.max() > current_price * (1 + 0.01 * self.tp_sl_ratio):
-                df.loc[df.index[i], 'signal'] = 1
-                  # BUY: TP = 90% of max price, SL = 20% below entry
-                max_price = future_prices.max()
-                df.loc[df.index[i], 'take_profit'] = current_price + (max_price - current_price) * 0.90
-                df.loc[df.index[i], 'stop_loss'] = current_price * (1 - 0.20)
+        threshold = 0.01 * self.tp_sl_ratio
 
-            elif future_prices.min() < current_price * (1 - 0.01 * self.tp_sl_ratio):
+        for i in range(len(df) - self.future_horizon):
+            future_prices = df['close'].iloc[i+1:i+1+self.future_horizon]
+            if future_prices.empty or future_prices.isna().all():
+                continue
+
+            current_price = df['close'].iloc[i]
+            future_high = future_prices.max()
+            future_low = future_prices.min()
+
+            if pd.isna(future_high) or pd.isna(future_low) or current_price <= 0:
+                continue
+
+            up_change = (future_high - current_price) / current_price
+            down_change = (current_price - future_low) / current_price
+
+            if up_change >= down_change and up_change >= threshold:
+                df.loc[df.index[i], 'signal'] = 1
+                df.loc[df.index[i], 'take_profit'] = future_high
+                df.loc[df.index[i], 'stop_loss'] = future_low
+            elif down_change > up_change and down_change >= threshold:
                 df.loc[df.index[i], 'signal'] = 0
-                # SELL: TP = min price, SL = 20% above entry
-                df.loc[df.index[i], 'take_profit'] = future_prices.min()
-                df.loc[df.index[i], 'stop_loss'] = current_price * (1 + 0.20)
+                df.loc[df.index[i], 'take_profit'] = future_low
+                df.loc[df.index[i], 'stop_loss'] = future_high
         
         # Set the first column back as index if it was the original index
         if 'open_time' in df.columns:
@@ -436,7 +454,10 @@ class DataProcessor:
             y_tp.append(tps[i])
             y_sl.append(sls[i])
             
-        return np.array(X), np.array(y_signal), np.array(y_tp), np.array(y_sl)
+        return (np.array(X, dtype=np.float32),
+                np.array(y_signal, dtype=np.int64),
+                np.array(y_tp, dtype=np.float32),
+                np.array(y_sl, dtype=np.float32))
 
     def inverse_transform(self, data):
         if isinstance(data, torch.Tensor):

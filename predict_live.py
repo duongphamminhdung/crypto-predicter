@@ -32,6 +32,54 @@ MODEL_DIR           = "../model"             # Directory for saving/loading mode
 TEST = True  # ⚠️ CHANGE THIS TO False FOR LIVE TRADING
 # ═══════════════════════════════════════════════════════════
 
+def get_feature_columns():
+    return [
+        # Basic prices
+        'open', 'high', 'low', 'close',
+        # Derived prices
+        'med', 'mid', 'typ', 'mean',
+        # Price-based features
+        'price_change', 'high_low_range', 'close_open_diff',
+        # Highest High / Lowest Low
+        'hh_14', 'll_14', 'hh_20', 'll_20',
+        # Moving Averages (SMA)
+        'sma_5', 'sma_10', 'sma_20', 'sma_50', 'sma_100', 'sma_200',
+        # Exponential Moving Averages (EMA)
+        'ema_5', 'ema_10', 'ema_20', 'ema_50', 'ema_100', 'ema_200',
+        # Advanced Moving Averages
+        'wma_14', 'wma_20', 'dema_14', 'tema_14',
+        # Price vs MA/EMA ratios
+        'price_vs_sma20', 'price_vs_sma50', 'price_vs_sma100', 'price_vs_sma200',
+        'price_vs_ema20', 'price_vs_ema50', 'price_vs_ema100', 'price_vs_ema200',
+        # MA/EMA Crossovers
+        'sma5_sma20_cross', 'sma20_sma50_cross', 'sma50_sma200_cross',
+        'ema5_ema20_cross', 'ema20_ema50_cross', 'ema50_ema200_cross',
+        # Oscillators
+        'rsi', 'willr_14',
+        # MACD
+        'macd', 'macd_signal', 'macd_diff',
+        # PPO
+        'ppo', 'ppo_signal', 'ppo_hist',
+        # Stochastic
+        'fk_14', 'fd_14', 'sk_14', 'sd_14', 'stoch_k', 'stoch_d',
+        # DMI (Directional Movement Index)
+        'plus_dm', 'minus_dm', 'plus_di', 'minus_di', 'dx', 'adx', 'adxr', 'dmi_cross',
+        # Bollinger Bands
+        'bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'pctbb_20',
+        # CCI
+        'cci_20',
+        # Volume
+        'volume_change', 'volume_ratio', 'vwap', 'price_vs_vwap',
+        # Volume-based indicators
+        'mfi_14', 'ad', 'co',
+        # Momentum
+        'momentum', 'rate_of_change', 'price_acceleration',
+        # Volatility
+        'volatility', 'trange', 'atr', 'atr_pct', 'natr_14',
+        # Support/Resistance
+        'local_high', 'local_low', 'dist_to_high', 'dist_to_low'
+    ]
+
                                     # ═══════════════════════════════════════════════════════════
                                     # ⚠️ FUTURES TRADING RISK CONFIGURATION
                                     # ═══════════════════════════════════════════════════════════
@@ -40,13 +88,17 @@ TEST = True  # ⚠️ CHANGE THIS TO False FOR LIVE TRADING
 CONFIDENCE_THRESHOLD_TRADE  = 0.70  # Only trade when confidence > 70%
 CONFIDENCE_THRESHOLD_TEST   = 0.70  # Trigger model testing when below 70%
 MAX_POSITION_RISK           = 0.10  # Max 10% of balance at risk per trade
-MAX_LEVERAGE                = 75    # Maximum leverage to use (lower = safer)
+MAX_LEVERAGE                = 75    # Exchange leverage cap
                                     # Early stop parameters
 EARLY_STOP_MAX_TIME_MINUTES = 120   # Close trade if it's been red for this long (minutes) - 2 hours
 EARLY_STOP_OPPOSITE_SIGNAL  = True  # Close losing trades if model predicts opposite signal
                                     # Early stop triggers when BOTH conditions are met: time limit AND opposite signal
                                     # Model refinement parameters
 REFINEMENT_INTERVAL_SECONDS = 3600  # Trigger model refinement every 1 hour (3600 seconds)
+FINE_TUNE_RECENT_ROWS      = 2000   # Minimum rows to include when preparing recent data for fine-tuning
+FINE_TUNE_LOOKBACK         = 30
+FINE_TUNE_FUTURE_HORIZON   = 15
+FINE_TUNE_TP_SL_RATIO      = 0.3
                                     # ═══════════════════════════════════════════════════════════
 
 def setup_logging():
@@ -71,8 +123,9 @@ def main():
     setup_logging()
     logging.info("🚀 Starting trading bot...")
     
-    model = CryptoPredicter()
-    test_model = CryptoPredicter()
+    feature_columns = get_feature_columns()
+    model = CryptoPredicter(input_size=len(feature_columns))
+    test_model = CryptoPredicter(input_size=len(feature_columns))
     client = MEXCClient()
     exchange = Exchange()
     
@@ -96,6 +149,11 @@ def main():
 
     # Load daily trading stats
     daily_stats = load_stats()
+    
+    # Reconcile any leftover trades from previous run using the latest historical data
+    active_trades, simulated_trades, daily_stats, trade_counter = reconcile_trades_on_startup(
+        active_trades, simulated_trades, daily_stats, trade_counter
+    )
     
     while True:
         try:
@@ -187,6 +245,7 @@ def main():
             # Trigger refinement if needed and not already testing
             if should_refine and not testing_model:
                 logging.info("🔄 Triggering scheduled model refinement with recent data...")
+                # Note: retrain_with_recent_data will need to be updated to match new training params if they changed significantly
                 retrain_with_recent_data(client)
                 # Start testing the new model
                 testing_model = True
@@ -252,16 +311,17 @@ def main():
             # Display active trades summary
             if trades_list:
                 mode_label = "🧪 SIMULATED Trades" if TEST else "📊 Active Trades"
+                # Update log message to reflect new active trade logging (more compact)
                 logging.info(f"\n{mode_label}: {len(trades_list)}")
+                # Log active trades to file for dashboard
+                log_active_trades_to_file(trades_list, current_price, simulated=TEST)
+                
                 for trade in trades_list: 
                     pnl_pct, pnl_usdt = calculate_unrealized_pnl(trade, current_price)
                     status_emoji = "🟢" if pnl_pct > 0 else "🔴"
                     trade_index = trade.get('index', '?')  # Use stored trade index
-                    logging.info(f"   {status_emoji} Trade #{trade_index}: {trade['side']} | Entry: ${trade['entry_price']:.2f} | "
-                               f"Unrealized P&L: {pnl_pct:+.2f}% (${pnl_usdt:+.2f})")
-                
-                                                                                                                                                                                                                                                                                                                                                # Note: Active trades are displayed above but not logged to JSON
-                                                                                                                                                                                                                                                                                                                                                # Only closed trades are logged to trades_log.json with simplified structure
+                    logging.info(f"   {status_emoji} #{trade_index}: {trade['side']} @ ${trade['entry_price']:.1f} | "
+                               f"PnL: {pnl_pct:+.2f}% (${pnl_usdt:+.2f}) | TP: ${trade['tp']:.1f} | SL: ${trade['sl']:.1f}")
             
             # Prediction logic for current model
             # Calculate technical indicators from raw OHLCV data
@@ -276,52 +336,7 @@ def main():
                 continue
             
             # Select the same features used in training
-            feature_columns = [
-                # Basic prices
-                'open', 'high', 'low', 'close',
-                # Derived prices
-                'med', 'mid', 'typ', 'mean',
-                # Price-based features
-                'price_change', 'high_low_range', 'close_open_diff',
-                # Highest High / Lowest Low
-                'hh_14', 'll_14', 'hh_20', 'll_20',
-                # Moving Averages (SMA)
-                'sma_5', 'sma_10', 'sma_20', 'sma_50', 'sma_100', 'sma_200',
-                # Exponential Moving Averages (EMA)
-                'ema_5', 'ema_10', 'ema_20', 'ema_50', 'ema_100', 'ema_200',
-                # Advanced Moving Averages
-                'wma_14', 'wma_20', 'dema_14', 'tema_14', 'kama_14',
-                # Price vs MA/EMA ratios
-                'price_vs_sma20', 'price_vs_sma50', 'price_vs_sma100', 'price_vs_sma200',
-                'price_vs_ema20', 'price_vs_ema50', 'price_vs_ema100', 'price_vs_ema200',
-                # MA/EMA Crossovers
-                'sma5_sma20_cross', 'sma20_sma50_cross', 'sma50_sma200_cross',
-                'ema5_ema20_cross', 'ema20_ema50_cross', 'ema50_ema200_cross',
-                # Oscillators
-                'rsi', 'willr_14',
-                # MACD
-                'macd', 'macd_signal', 'macd_diff',
-                # PPO
-                'ppo', 'ppo_signal', 'ppo_hist',
-                # Stochastic
-                'fk_14', 'fd_14', 'sk_14', 'sd_14', 'stoch_k', 'stoch_d',
-                # DMI (Directional Movement Index)
-                'plus_dm', 'minus_dm', 'plus_di', 'minus_di', 'dx', 'adx', 'adxr', 'dmi_cross',
-                # Bollinger Bands
-                'bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'pctbb_20',
-                # CCI
-                'cci_20',
-                # Volume
-                'volume_change', 'volume_ratio', 'vwap', 'price_vs_vwap',
-                # Volume-based indicators
-                'mfi_14', 'ad', 'co',
-                # Momentum
-                'momentum', 'rate_of_change', 'price_acceleration',
-                # Volatility
-                'volatility', 'trange', 'atr', 'atr_pct', 'natr_14',
-                # Support/Resistance
-                'local_high', 'local_low', 'dist_to_high', 'dist_to_low'
-            ]
+            feature_columns = get_feature_columns()
             
             # Ensure we have enough data after indicator calculation
             if len(df_with_indicators) < look_back:
@@ -483,7 +498,7 @@ def main():
                 usdt_balance = exchange.get_usdt_balance()
                 # Pass signal alignment info: higher investment when model signal matches TP-based signal
                 signal_aligned = not signal_mismatch  # True if signals match
-                trade_percentage, trade_amount_usdt, trade_quantity_btc = calculate_trade_amount(
+                trade_percentage, trade_margin_usdt, trade_quantity_btc, trade_notional_usdt, trade_leverage = calculate_trade_amount(
                     confidence, usdt_balance, current_price, sl, signal_aligned=signal_aligned
                 )
             except Exception as e:
@@ -494,10 +509,12 @@ def main():
             # Display current model prediction with probability breakdown if confidence is low
             if confidence < 0.75:
                 logging.info(f"\n📊 Signal: {signal_map[predicted_signal]} | Confidence: {confidence:.2f} (SELL: {sell_prob:.3f}, BUY: {buy_prob:.3f}) | "
-                            f"TP: ${tp:.2f} | SL: ${sl:.2f} | Trade: ${trade_amount_usdt:.2f} ({trade_percentage:.1f}%)")
+                            f"TP: ${tp:.2f} | SL: ${sl:.2f} | Margin: ${trade_margin_usdt:.2f} ({trade_percentage:.1f}%) | "
+                            f"Notional: ${trade_notional_usdt:.2f} (x{trade_leverage})")
             else:
                 logging.info(f"\n📊 Signal: {signal_map[predicted_signal]} | Confidence: {confidence:.2f} | "
-                            f"TP: ${tp:.2f} | SL: ${sl:.2f} | Trade: ${trade_amount_usdt:.2f} ({trade_percentage:.1f}%)")
+                            f"TP: ${tp:.2f} | SL: ${sl:.2f} | Margin: ${trade_margin_usdt:.2f} ({trade_percentage:.1f}%) | "
+                            f"Notional: ${trade_notional_usdt:.2f} (x{trade_leverage})")
 
             # Track current model predictions during testing
             if testing_model:
@@ -567,7 +584,7 @@ def main():
                 # Continue with test model comparison after adjustments
                 # Pass signal alignment info for test model
                 test_signal_aligned = not test_signal_mismatch  # True if signals match
-                test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc = calculate_trade_amount(
+                test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc, test_trade_notional_usdt, test_trade_leverage = calculate_trade_amount(
                     test_confidence, usdt_balance, current_price, test_sl, signal_aligned=test_signal_aligned
                 )
                 
@@ -576,7 +593,7 @@ def main():
                 logging.info("🧪 TEST MODEL PREDICTION")
                 logging.info("="*60)
                 print_prediction(test_predicted_signal, test_confidence, test_tp, test_sl, 
-                               test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc, usdt_balance)
+                               test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc, test_trade_notional_usdt, test_trade_leverage, usdt_balance)
                 
                 test_model_predictions.append({
                     'signal'     : test_predicted_signal,
@@ -625,11 +642,17 @@ def main():
                         trade_index = trade_counter
                         logging.info(f"✅ VERY HIGH CONFIDENCE ({confidence:.2f}) - Executing trade")
                         if TEST:
-                            new_trade = simulate_trade(predicted_signal, trade_quantity_btc, current_price, tp, sl, confidence=confidence)
+                            new_trade = simulate_trade(
+                                predicted_signal, trade_quantity_btc, current_price, tp, sl,
+                                trade_margin_usdt, trade_notional_usdt, trade_leverage, confidence=confidence
+                            )
                             new_trade['index'] = trade_index  # Store index in trade
                             simulated_trades.append(new_trade)
                         else:
-                            new_trade = execute_trade(predicted_signal, exchange, trade_quantity_btc, current_price, tp, sl, confidence=confidence)
+                            new_trade = execute_trade(
+                                predicted_signal, exchange, trade_quantity_btc, current_price, tp, sl,
+                                trade_margin_usdt, trade_notional_usdt, trade_leverage, confidence=confidence
+                            )
                             new_trade['index'] = trade_index  # Store index in trade
                             active_trades.append(new_trade)
                         # Save current trades after opening new trade
@@ -652,7 +675,7 @@ def main():
                         
                         if entry_worse:
                             # Entry is worse, but check if confidence is high enough to override
-                            if confidence >= 0.9 and confidence > existing_confidence:
+                            if confidence > = 0.9 and confidence > = existing_confidence:
                                 # High confidence and higher than existing - allow trade
                                 logging.info(f"✅ Overriding worse entry: Confidence {confidence:.2f} >= 0.9 and higher than existing {existing_confidence:.2f}")
                                 should_skip = False
@@ -671,11 +694,17 @@ def main():
                     trade_index = trade_counter
                     logging.info(f"✅ VERY HIGH CONFIDENCE ({confidence:.2f}) - Executing trade")
                     if TEST:
-                        new_trade = simulate_trade(predicted_signal, trade_quantity_btc, current_price, tp, sl, confidence=confidence)
+                        new_trade = simulate_trade(
+                            predicted_signal, trade_quantity_btc, current_price, tp, sl,
+                            trade_margin_usdt, trade_notional_usdt, trade_leverage, confidence=confidence
+                        )
                         new_trade['index'] = trade_index  # Store index in trade
                         simulated_trades.append(new_trade)
                     else:
-                        new_trade = execute_trade(predicted_signal, exchange, trade_quantity_btc, current_price, tp, sl, confidence=confidence)
+                        new_trade = execute_trade(
+                            predicted_signal, exchange, trade_quantity_btc, current_price, tp, sl,
+                            trade_margin_usdt, trade_notional_usdt, trade_leverage, confidence=confidence
+                        )
                         new_trade['index'] = trade_index  # Store index in trade
                         active_trades.append(new_trade)
                     # Save current trades after opening new trade
@@ -712,9 +741,23 @@ def main():
             logging.error(f"An error occurred: {e}", exc_info=True)
             time.sleep(60)
 
+def determine_leverage(confidence):
+    if confidence >= 0.98:
+        return min(75, MAX_LEVERAGE)
+    elif confidence >= 0.90:
+        return min(60, MAX_LEVERAGE)
+    elif confidence >= 0.85:
+        return min(40, MAX_LEVERAGE)
+    elif confidence >= 0.80:
+        return min(30, MAX_LEVERAGE)
+    elif confidence >= 0.75:
+        return min(20, MAX_LEVERAGE)
+    else:
+        return min(10, MAX_LEVERAGE)
+
 def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal_aligned=True):
     """
-    Calculate recommended trade amount based on confidence level and signal alignment.
+    Calculate recommended trade amount (margin) based on confidence level and signal alignment.
     Higher confidence with aligned signals (model signal matches TP-based signal) = larger position size.
     
     Base position sizing by confidence:
@@ -740,10 +783,12 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal
         stop_loss: Stop loss price (for reference, not used in calculation)
         signal_aligned: True if model signal matches TP-based signal, False otherwise
     
-    Returns           : 
-    trade_percentage  : Percentage of balance to trade
-    trade_amount_usdt : Amount in USDT
-    trade_quantity_btc: Quantity in BTC
+    Returns: 
+        trade_percentage   : Percentage of balance to allocate as margin
+        margin_usdt        : Margin placed on the trade
+        trade_quantity_btc : BTC quantity controlled after applying leverage
+        notional_usdt      : Effective notional size (margin * leverage)
+        leverage_used      : Leverage multiplier applied to this trade
     """
     # Base confidence-based position sizing (% of balance to trade)
     if confidence >= 1.0:
@@ -774,32 +819,35 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal
         # Signals mismatch - reduce position size by 50%
         trade_percentage = base_percentage * 0.5
     
-    # Calculate trade amount in USDT
-    trade_amount_usdt = balance * (trade_percentage / 100)
+    # Calculate margin in USDT
+    margin_usdt = balance * (trade_percentage / 100)
     
     # Minimum trade size
     min_trade_amount = 10.0  # Minimum $10 USDT
-    if trade_amount_usdt < min_trade_amount:
-        trade_amount_usdt = min_trade_amount
-        trade_percentage = (trade_amount_usdt / balance * 100) if balance > 0 else 0
+    if margin_usdt < min_trade_amount:
+        margin_usdt = min_trade_amount
+        trade_percentage = (margin_usdt / balance * 100) if balance > 0 else 0
+    
+    leverage_used = determine_leverage(confidence)
+    notional_usdt = margin_usdt * leverage_used
     
     # Calculate quantity in BTC
-    trade_quantity_btc = trade_amount_usdt / current_price
+    trade_quantity_btc = notional_usdt / current_price
     
     # Calculate actual risk based on stop loss distance
     sl_distance_pct = abs(current_price - stop_loss) / current_price * 100
-    actual_risk_usdt = trade_amount_usdt * (sl_distance_pct / 100)
+    actual_risk_usdt = margin_usdt * leverage_used * (sl_distance_pct / 100)
     
     # Log risk management info
     alignment_status = "ALIGNED" if signal_aligned else "MISMATCHED"
     logging.debug(
-        f"Position sizing: Conf={confidence:.2f}, Signals={alignment_status}, Position={trade_percentage:.1f}%, "
-        f"Trade=${trade_amount_usdt:.2f}, SL_dist={sl_distance_pct:.2f}%, Risk=${actual_risk_usdt:.2f}"
+        f"Position sizing: Conf={confidence:.2f}, Signals={alignment_status}, Margin={trade_percentage:.1f}%, "
+        f"Margin=${margin_usdt:.2f}, Notional=${notional_usdt:.2f} (x{leverage_used}), SL_dist={sl_distance_pct:.2f}%, Risk=${actual_risk_usdt:.2f}"
     )
     
-    return trade_percentage, trade_amount_usdt, trade_quantity_btc
+    return trade_percentage, margin_usdt, trade_quantity_btc, notional_usdt, leverage_used
 
-def print_prediction(signal, confidence, tp, sl, trade_percentage, trade_amount_usdt, trade_quantity_btc, balance):
+def print_prediction(signal, confidence, tp, sl, trade_percentage, margin_usdt, trade_quantity_btc, notional_usdt, leverage, balance):
     signal_map = {0: 'SELL', 1: 'BUY'}
     logging.info(f"\n{'='*60}")
     logging.info(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] PREDICTION")
@@ -809,16 +857,17 @@ def print_prediction(signal, confidence, tp, sl, trade_percentage, trade_amount_
     logging.info(f"\n--- TRADE RECOMMENDATION ---")
     logging.info(f"Current USDT Balance: ${balance:.2f}")
     logging.info(f"Recommended Trade Size: {trade_percentage:.1f}% of balance")
-    logging.info(f"Trade Amount: ${trade_amount_usdt:.2f} USDT ({trade_quantity_btc:.6f} BTC)")
+    logging.info(f"Margin: ${margin_usdt:.2f} USDT ({trade_percentage:.1f}% of balance)")
+    logging.info(f"Notional (x{leverage:.0f}): ${notional_usdt:.2f} | Size: {trade_quantity_btc:.6f} BTC")
     logging.info(f"{'='*60}\n")
 
-def simulate_trade(signal, quantity, entry_price, tp, sl, confidence=None):
+def simulate_trade(signal, quantity, entry_price, tp, sl, margin_usdt, notional_usdt, leverage, confidence=None):
     """Simulate a trade without actually executing it (for TEST mode)"""
     side = {0: 'SELL', 1: 'BUY'}[signal]
     # Don't log simulated message - already shown at startup
     
     # Calculate trade amounts
-    trade_amount_usdt = quantity * entry_price
+    trade_amount_usdt = margin_usdt  # Store margin for backward compatibility
     
     # Calculate expected profit/loss amounts
     if signal == 1:  # BUY
@@ -838,6 +887,9 @@ def simulate_trade(signal, quantity, entry_price, tp, sl, confidence=None):
         'entry_time': time.time(),
         'quantity': quantity,
         'trade_amount_usdt': trade_amount_usdt,
+        'margin_usdt': margin_usdt,
+        'notional_usdt': notional_usdt,
+        'leverage': leverage,
         'expected_profit_usdt': expected_profit_usdt,
         'expected_loss_usdt': expected_loss_usdt
     }
@@ -882,7 +934,9 @@ def log_trade_to_file(trade_index, trade, exit_price, result, actual_pnl_usdt, p
             'Profit/loss': result,  # 'PROFIT' or 'LOSS'
             'PL percentage': float(pnl_percentage),
             'PL in $': float(actual_pnl_usdt),
-            'entry price': float(trade['entry_price'])
+            'entry price': float(trade['entry_price']),
+            'leverage': float(trade.get('leverage', 1)),
+            'margin': float(trade.get('margin_usdt', trade.get('trade_amount_usdt', 0)))
         }
         
         # Append to log
@@ -951,6 +1005,9 @@ def log_active_trades_to_file(trades_list, current_price, simulated=False):
                     'stop_loss': float(trade['sl']),
                     'quantity_btc': float(trade['quantity']),
                     'trade_amount_usdt': float(trade['trade_amount_usdt']),
+                    'margin_usdt': float(trade.get('margin_usdt', trade.get('trade_amount_usdt', 0))),
+                    'notional_usdt': float(trade.get('notional_usdt', 0)),
+                    'leverage': float(trade.get('leverage', 1)),
                     'unrealized_pnl_usdt': float(unrealized_pnl_usdt),
                     'unrealized_pnl_percentage': float(pnl_pct),
                     'duration_minutes': duration_minutes,
@@ -979,6 +1036,8 @@ def print_trade_result(trade, exit_price, result, simulated=False, trade_index=N
     duration_minutes = int(duration / 60)
     
     # Calculate actual profit/loss
+    leverage = trade.get('leverage', 1)
+    margin_used = trade.get('margin_usdt', trade.get('trade_amount_usdt', 1))
     if trade['signal'] == 1:  # BUY trade
         actual_pnl_usdt = trade['quantity'] * (exit_price - trade['entry_price'])
         price_change_pct = ((exit_price - trade['entry_price']) / trade['entry_price']) * 100
@@ -986,7 +1045,7 @@ def print_trade_result(trade, exit_price, result, simulated=False, trade_index=N
         actual_pnl_usdt = trade['quantity'] * (trade['entry_price'] - exit_price)
         price_change_pct = ((trade['entry_price'] - exit_price) / trade['entry_price']) * 100
     
-    pnl_percentage = (actual_pnl_usdt / trade['trade_amount_usdt']) * 100
+    pnl_percentage = (actual_pnl_usdt / margin_used) * 100 if margin_used else 0
     
     # Log to separate file if trade_index is provided
     if trade_index is not None:
@@ -1013,13 +1072,14 @@ def print_trade_result(trade, exit_price, result, simulated=False, trade_index=N
     
     logging.info(f"\n{emoji} Trade #{trade_index if trade_index else '?'} {result_text} | "
                  f"{trade['side']} | Entry: ${trade['entry_price']:.2f} → Exit: ${exit_price:.2f} | "
+                 f"Margin: ${margin_used:.2f} | Lev: x{leverage:.0f} | "
                  f"Expected: ${trade['expected_profit_usdt']:.2f} | "
-                 f"Actual: {pnl_sign}${actual_pnl_usdt:.2f} ({pnl_percentage:+.2f}%) | "
+                 f"Actual: {pnl_sign}${actual_pnl_usdt:.2f} ({pnl_percentage:+.2f}% on margin) | "
                  f"Duration: {duration_minutes}m")
     
     return actual_pnl_usdt
 
-def execute_trade(signal, exchange, quantity, entry_price, tp, sl, confidence=None):
+def execute_trade(signal, exchange, quantity, entry_price, tp, sl, margin_usdt, notional_usdt, leverage, confidence=None):
     """Execute trade and return trade info for tracking"""
     side = {0: 'SELL', 1: 'BUY'}[signal]
     logging.info(f"\n💰 Confidence >= 0.65. Placing {side} order.")
@@ -1028,7 +1088,7 @@ def execute_trade(signal, exchange, quantity, entry_price, tp, sl, confidence=No
     exchange.place_order('BTC_USDT', 'MARKET', side, quantity)
 
     # Calculate trade amounts
-    trade_amount_usdt = quantity * entry_price
+    trade_amount_usdt = margin_usdt
     
     # Calculate expected profit/loss amounts
     if signal               == 1:                             # BUY
@@ -1048,6 +1108,9 @@ def execute_trade(signal, exchange, quantity, entry_price, tp, sl, confidence=No
         'entry_time'          : time.time(),
         'quantity'            : quantity,
         'trade_amount_usdt'   : trade_amount_usdt,
+        'margin_usdt'         : margin_usdt,
+        'notional_usdt'       : notional_usdt,
+        'leverage'            : leverage,
         'expected_profit_usdt': expected_profit_usdt,
         'expected_loss_usdt'  : expected_loss_usdt
     }
@@ -1363,9 +1426,9 @@ def retrain_with_recent_data(client):
             logging.error(f"Training data is too small ({len(full_df)} rows). Cannot fine-tune.")
             return
         
-        # Use the latest 500 rows (or all if less than 500) for fine-tuning
-        # This ensures we have enough data for signal generation
-        num_rows_to_use = min(500, len(full_df))
+        # Use the latest portion of data for fine-tuning (ensure enough samples for sequences)
+        rows_target = max(FINE_TUNE_RECENT_ROWS, FINE_TUNE_LOOKBACK * 50)
+        num_rows_to_use = min(len(full_df), rows_target)
         recent_df       = full_df.tail(num_rows_to_use)
         
         logging.info(f"Using latest {len(recent_df)} rows from training dataset (out of {len(full_df)} total) for fine-tuning")
@@ -1556,6 +1619,101 @@ def update_stats(stats, result, pnl):
         stats['failed_trades'] += 1
     
     stats['total_profit_usdt'] += pnl
+
+def load_price_history(max_rows=None):
+    """Load training_data.csv for trade reconciliation."""
+    if not os.path.exists('training_data.csv'):
+        logging.warning("training_data.csv not found. Cannot reconcile previous trades.")
+        return None
+    try:
+        df = pd.read_csv('training_data.csv', index_col=0, parse_dates=True)
+        if df.empty:
+            logging.warning("training_data.csv is empty. Cannot reconcile previous trades.")
+            return None
+        if max_rows:
+            df = df.tail(max_rows)
+        return df
+    except Exception as e:
+        logging.error(f"Failed to load training_data.csv for reconciliation: {e}")
+        return None
+
+def determine_trade_outcome_from_history(trade, price_history):
+    """Check if a persisted trade should have been closed based on historical prices."""
+    entry_ts = trade.get('entry_time')
+    if entry_ts is None:
+        return None, None
+    entry_dt = datetime.fromtimestamp(entry_ts)
+    history = price_history[price_history.index >= entry_dt]
+    if history.empty:
+        return None, None
+    
+    for _, row in history.iterrows():
+        high = row.get('high')
+        low = row.get('low')
+        if pd.isna(high) or pd.isna(low):
+            continue
+        if trade['signal'] == 1:  # BUY
+            if low <= trade['sl']:
+                return trade['sl'], 'LOSS'
+            if high >= trade['tp']:
+                return trade['tp'], 'PROFIT'
+        else:  # SELL
+            if high >= trade['sl']:
+                return trade['sl'], 'LOSS'
+            if low <= trade['tp']:
+                return trade['tp'], 'PROFIT'
+    return None, None
+
+def reconcile_trades_on_startup(active_trades, simulated_trades, daily_stats, trade_counter):
+    """
+    When the bot restarts, check if any persisted trades should have been closed
+    based on the latest historical data (training_data.csv). If so, close them,
+    log the results, and update stats/logs accordingly.
+    """
+    price_history = load_price_history()
+    if price_history is None:
+        return active_trades, simulated_trades, daily_stats, trade_counter
+    
+    logging.info("🔁 Reconciling persisted trades against historical data...")
+    trades_closed = 0
+    stats_updated = False
+    
+    for trades_list, simulated in ((active_trades, False), (simulated_trades, True)):
+        indexes_to_remove = []
+        for idx, trade in enumerate(trades_list):
+            exit_price, outcome = determine_trade_outcome_from_history(trade, price_history)
+            if exit_price is None:
+                continue
+            
+            if trade.get('index') is None:
+                trade_counter += 1
+                trade['index'] = trade_counter
+            
+            pnl = print_trade_result(
+                trade,
+                exit_price,
+                result='PROFIT' if outcome == 'PROFIT' else 'LOSS',
+                simulated=simulated or TEST,
+                trade_index=trade['index']
+            )
+            if not (simulated or TEST):
+                update_stats(daily_stats, outcome, pnl)
+                stats_updated = True
+            indexes_to_remove.append(idx)
+            trades_closed += 1
+        
+        for idx in reversed(indexes_to_remove):
+            trades_list.pop(idx)
+    
+    if trades_closed:
+        logging.info(f"✅ Reconciled and closed {trades_closed} persisted trades before starting loop.")
+        save_current_trades(active_trades, simulated_trades, trade_counter)
+        if stats_updated:
+            save_stats(daily_stats)
+    else:
+        logging.info("ℹ️  No persisted trades required reconciliation.")
+    
+    return active_trades, simulated_trades, daily_stats, trade_counter
 
 if __name__ == '__main__':
     main()
