@@ -611,7 +611,7 @@ def main():
                 logging.info("\n🧪 Testing mode: Both models running in parallel. Using current model for trading.")
                 # Still execute trades with current model during testing if VERY high confidence
                 if confidence >= CONFIDENCE_THRESHOLD_TRADE:
-                                    # Check if we should skip this trade: only open new trade if entry is better OR confidence is higher (>=0.9)
+                    # Check if we should skip this trade: only open new trade if entry is better OR confidence is higher (>=0.9)
                     should_skip = False
                     for trade in trades_list:
                         if trade['signal'] == predicted_signal:  # Same signal type
@@ -677,7 +677,7 @@ def main():
                         
                         if entry_worse:
                             # Entry is worse, but check if confidence is high enough to override
-                            if confidence > = 0.9 and confidence > = existing_confidence:
+                            if confidence >= 0.9 and confidence >= existing_confidence:
                                 # High confidence and higher than existing - allow trade
                                 logging.info(f"✅ Overriding worse entry: Confidence {confidence:.2f} >= 0.9 and higher than existing {existing_confidence:.2f}")
                                 should_skip = False

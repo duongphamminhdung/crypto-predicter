@@ -45,7 +45,7 @@ def main():
     
     # For fine-tuning with latest historical data, use more lenient parameters
     if is_fine_tuning:
-            # Use smaller lookback and lower tp_sl_ratio to get more signals from latest data
+        # Use smaller lookback and lower tp_sl_ratio to get more signals from latest data
         print(f"🔧 Fine-tuning parameters: look_back={FINE_TUNE_LOOKBACK}, tp_sl_ratio={FINE_TUNE_TP_SL_RATIO}, future_horizon={FINE_TUNE_FUTURE_HORIZON} (more lenient for better signal generation)")
         processor = DataProcessor(
             look_back=FINE_TUNE_LOOKBACK,
@@ -125,7 +125,7 @@ def main():
                 # Subsequent batches - get data before the oldest timestamp from previous batch
                 # Get the oldest time from the last batch (open_time is still a column at this point)
                 oldest_time = int(all_data[-1]['open_time'].iloc[0].timestamp())
-                    # Get data ending before the oldest point we have
+                # Get data ending before the oldest point we have
                 batch_df = client.get_kline_data(symbol='BTC_USDT', interval='Min1', end=oldest_time - 60)
             
             if batch_df is not None and not batch_df.empty:
@@ -167,7 +167,7 @@ def main():
     print("Generating trading labels (buy/sell signals)...")
     labeled_df = processor._generate_labels(df.copy())
     
-      # Save the labeled data (only for full training, not fine-tuning)
+    # Save the labeled data (only for full training, not fine-tuning)
     if not is_fine_tuning:
         labeled_df.to_csv('training_data.csv')
         print(f"✅ Training data saved to training_data.csv ({len(labeled_df)} rows)")

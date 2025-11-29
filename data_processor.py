@@ -41,7 +41,7 @@ class DataProcessor:
         df['hh_20'] = df['high'].rolling(window=20).max()  # HH(20)
         df['ll_20'] = df['low'].rolling(window=20).min()   # LL(20)
         
-                              # Moving Averages (SMA)
+        # Moving Averages (SMA)
         df['sma_5'] = df['close'].rolling(window=5).mean()
         df['sma_10'] = df['close'].rolling(window=10).mean()
         df['sma_20'] = df['close'].rolling(window=20).mean()
@@ -282,7 +282,7 @@ class DataProcessor:
 
         # Select feature columns (technical indicators)
         feature_columns = [
-                          # Basic prices
+            # Basic prices
             'open', 'high', 'low', 'close',
             # Derived prices
             'med', 'mid', 'typ', 'mean',
@@ -320,7 +320,7 @@ class DataProcessor:
             'volume_change', 'volume_ratio', 'vwap', 'price_vs_vwap',
             # Volume-based indicators
             'mfi_14', 'ad', 'co',
-              # Momentum
+            # Momentum
             'momentum', 'rate_of_change', 'price_acceleration',
             # Volatility
             'volatility', 'trange', 'atr', 'atr_pct', 'natr_14',
