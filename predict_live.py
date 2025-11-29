@@ -376,27 +376,9 @@ def main():
                 logging.debug(f"🔍 Low confidence breakdown: SELL={sell_prob:.3f}, BUY={buy_prob:.3f}, "
                             f"Max (confidence)={confidence:.3f}, Predicted={signal_map[predicted_signal]}")
             
-            # Check for early stops on active trades (before processing new predictions)
-            # This allows us to use the predicted_signal to check for opposite signals
-            if trades_list:
-                for i, trade in enumerate(trades_list):
-                    if check_early_stop(trade, current_price, predicted_signal):
-                        # Use stored trade index if available, otherwise assign new one
-                        trade_index = trade.get('index', None)
-                        if trade_index is None:
-                            trade_counter += 1
-                            trade_index = trade_counter
-                        pnl = print_trade_result(trade, current_price, result='LOSS', simulated=TEST, trade_index=trade_index, early_stop=True)
-                        if not TEST:
-                            update_stats(daily_stats, 'LOSS', pnl)
-                        trades_list.pop(i)
-                        logging.info("🛑 Trade closed due to early stop condition")
-                        # Save current trades after closing
-                        save_current_trades(active_trades, simulated_trades, trade_counter)
-                        break  # Only close one trade per cycle to avoid index issues
-            
-            # Use close_scaler for inverse transform of TP/SL
+            # Use close_scaler for inverse transform of TP/SL (calculate early for early stop check)
             signal_mismatch = False  # Default to no mismatch
+            tp_based_signal = predicted_signal  # Default to model signal
             try:
                 if close_scaler is not None:
                     tp = close_scaler.inverse_transform(tp_scaled.detach().cpu().numpy().reshape(-1, 1))[0][0]
@@ -463,6 +445,26 @@ def main():
                 sl = current_price * 0.99
                 # Default to BUY if TP calculation fails
                 predicted_signal = 1 if tp > current_price else 0
+                tp_based_signal = predicted_signal  # Update tp_based_signal if TP calc failed
+            
+            # Check for early stops on active trades (using TP-based signal)
+            # Early stop triggers if TP-based signal is opposite to the trade direction
+            if trades_list:
+                for i, trade in enumerate(trades_list):
+                    if check_early_stop(trade, current_price, tp_based_signal):
+                        # Use stored trade index if available, otherwise assign new one
+                        trade_index = trade.get('index', None)
+                        if trade_index is None:
+                            trade_counter += 1
+                            trade_index = trade_counter
+                        pnl = print_trade_result(trade, current_price, result='LOSS', simulated=TEST, trade_index=trade_index, early_stop=True)
+                        if not TEST:
+                            update_stats(daily_stats, 'LOSS', pnl)
+                        trades_list.pop(i)
+                        logging.info("🛑 Trade closed due to early stop condition (TP-based signal opposite)")
+                        # Save current trades after closing
+                        save_current_trades(active_trades, simulated_trades, trade_counter)
+                        break  # Only close one trade per cycle to avoid index issues
             
             # Risk Management: Check if profitable trades should be closed when model predicts opposite signal
             # This check happens after TP-based signal is calculated
@@ -1150,13 +1152,16 @@ def is_trade_complete(trade, current_price):
     else:   # SELL trade
         return current_price <= trade['tp']
 
-def check_early_stop(trade, current_price, predicted_signal=None):
+def check_early_stop(trade, current_price, tp_based_signal=None):
     """
     Check if trade should be early stopped based on:
     1. Trade has been red (losing) for too long
-    3. Model is predicting opposite signal (if enabled)
+    2. TP-based signal is opposite to trade direction (if enabled)
     
-    Early stop triggers when BOTH conditions 1 AND 3 are True.
+    TP-based signal: If TP > current_price → BUY (1), if TP < current_price → SELL (0)
+    This means if model predicts BUY but TP is below current price, the TP-based signal is SELL.
+    
+    Early stop triggers when BOTH conditions 1 AND 2 are True.
     """
     pnl_pct, _ = calculate_unrealized_pnl(trade, current_price)
     duration_minutes = (time.time() - trade['entry_time']) / 60
@@ -1168,18 +1173,18 @@ def check_early_stop(trade, current_price, predicted_signal=None):
     # Condition 1: Trade has been red for too long
     time_condition = duration_minutes >= EARLY_STOP_MAX_TIME_MINUTES
     
-    # Condition 3: Model is predicting opposite signal (if enabled)
+    # Condition 2: TP-based signal is opposite to current trade (if enabled)
     opposite_signal_condition = False
-    if EARLY_STOP_OPPOSITE_SIGNAL and predicted_signal is not None:
-        # Check if predicted signal is opposite to current trade
-        if trade['signal'] == 1 and predicted_signal == 0:  # BUY trade, model predicts SELL
+    if EARLY_STOP_OPPOSITE_SIGNAL and tp_based_signal is not None:
+        # Check if TP-based signal is opposite to current trade
+        if trade['signal'] == 1 and tp_based_signal == 0:  # BUY trade, TP-based signal is SELL
             opposite_signal_condition = True
-        elif trade['signal'] == 0 and predicted_signal == 1:  # SELL trade, model predicts BUY
+        elif trade['signal'] == 0 and tp_based_signal == 1:  # SELL trade, TP-based signal is BUY
             opposite_signal_condition = True
     
     # Early stop only if BOTH conditions are True
     if time_condition and opposite_signal_condition:
-        logging.warning(f"🛑 Early stop: Trade has been red for {duration_minutes:.1f} minutes AND model predicts opposite signal (loss: {pnl_pct:.2f}%)")
+        logging.warning(f"🛑 Early stop: Trade has been red for {duration_minutes:.1f} minutes AND TP-based signal is opposite (loss: {pnl_pct:.2f}%)")
         return True
     
     return False
