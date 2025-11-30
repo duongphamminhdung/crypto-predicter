@@ -90,7 +90,7 @@ CONFIDENCE_THRESHOLD_TEST   = 0.70  # Trigger model testing when below 70%
 MAX_POSITION_RISK           = 0.10  # Max 10% of balance at risk per trade
 MAX_LEVERAGE                = 75    # Exchange leverage cap
                                     # Early stop parameters
-EARLY_STOP_MAX_TIME_MINUTES = 120   # Close trade if it's been red for this long (minutes) - 2 hours
+EARLY_STOP_MAX_TIME_MINUTES = 300   # Close trade if it's been red for this long (minutes) - 5 hours
 EARLY_STOP_OPPOSITE_SIGNAL  = True  # Close losing trades if model predicts opposite signal
                                     # Early stop triggers when BOTH conditions are met: time limit AND opposite signal
                                     # Model refinement parameters
@@ -447,11 +447,11 @@ def main():
                 predicted_signal = 1 if tp > current_price else 0
                 tp_based_signal = predicted_signal  # Update tp_based_signal if TP calc failed
             
-            # Check for early stops on active trades (using TP-based signal)
-            # Early stop triggers if TP-based signal is opposite to the trade direction
+            # Check for early stops on active trades (using model's predicted signal)
+            # Early stop triggers if trade has been losing for >5 hours AND model predicts opposite signal
             if trades_list:
                 for i, trade in enumerate(trades_list):
-                    if check_early_stop(trade, current_price, tp_based_signal):
+                    if check_early_stop(trade, current_price, model_predicted_signal):
                         # Use stored trade index if available, otherwise assign new one
                         trade_index = trade.get('index', None)
                         if trade_index is None:
@@ -461,10 +461,39 @@ def main():
                         if not TEST:
                             update_stats(daily_stats, 'LOSS', pnl)
                         trades_list.pop(i)
-                        logging.info("🛑 Trade closed due to early stop condition (TP-based signal opposite)")
+                        logging.info("🛑 Trade closed due to early stop condition (loss >5 hours AND model predicts opposite)")
                         # Save current trades after closing
                         save_current_trades(active_trades, simulated_trades, trade_counter)
                         break  # Only close one trade per cycle to avoid index issues
+            
+            # Early Profit-Taking: Close profitable trades (>= 0.15%) when TP-based signal is opposite
+            # This check happens after early stop check and before risk management
+            if trades_list:
+                tp_signal_exit_index, tp_signal_exit_trade = check_profitable_trade_tp_signal_exit(
+                    trades_list, current_price, tp_based_signal
+                )
+                if tp_signal_exit_index is not None and tp_signal_exit_trade is not None:
+                    # Close the profitable trade
+                    trade_index = tp_signal_exit_trade.get('index', None)
+                    if trade_index is None:
+                        trade_counter += 1
+                        trade_index = trade_counter
+                    
+                    # Determine result based on P&L (should be PROFIT since threshold is >= 0.15%)
+                    pnl_pct, pnl_usdt = calculate_unrealized_pnl(tp_signal_exit_trade, current_price)
+                    result = 'PROFIT' if pnl_usdt > 0 else 'LOSS'
+                    
+                    pnl = print_trade_result(tp_signal_exit_trade, current_price, result=result, 
+                                            simulated=TEST, trade_index=trade_index, early_stop=False)
+                    if not TEST:
+                        update_stats(daily_stats, result, pnl)
+                    
+                    trades_list.pop(tp_signal_exit_index)
+                    logging.info(f"💰 Early profit-taking: Closed trade with {pnl_pct:+.2f}% profit due to opposite TP-based signal")
+                    # Save current trades after closing
+                    save_current_trades(active_trades, simulated_trades, trade_counter)
+                    # Continue to next cycle after closing trade
+                    continue
             
             # Risk Management: Check if profitable trades should be closed when model predicts opposite signal
             # This check happens after TP-based signal is calculated
@@ -1152,14 +1181,11 @@ def is_trade_complete(trade, current_price):
     else:   # SELL trade
         return current_price <= trade['tp']
 
-def check_early_stop(trade, current_price, tp_based_signal=None):
+def check_early_stop(trade, current_price, model_predicted_signal=None):
     """
     Check if trade should be early stopped based on:
-    1. Trade has been red (losing) for too long
-    2. TP-based signal is opposite to trade direction (if enabled)
-    
-    TP-based signal: If TP > current_price → BUY (1), if TP < current_price → SELL (0)
-    This means if model predicts BUY but TP is below current price, the TP-based signal is SELL.
+    1. Trade has been red (losing) for more than 5 hours
+    2. Model predicts opposite signal (if enabled)
     
     Early stop triggers when BOTH conditions 1 AND 2 are True.
     """
@@ -1170,24 +1196,69 @@ def check_early_stop(trade, current_price, tp_based_signal=None):
     if pnl_pct >= 0:
         return False  # Trade is green, no early stop
     
-    # Condition 1: Trade has been red for too long
+    # Condition 1: Trade has been red for more than 5 hours (300 minutes)
     time_condition = duration_minutes >= EARLY_STOP_MAX_TIME_MINUTES
     
-    # Condition 2: TP-based signal is opposite to current trade (if enabled)
+    # Condition 2: Model predicts opposite signal (if enabled)
     opposite_signal_condition = False
-    if EARLY_STOP_OPPOSITE_SIGNAL and tp_based_signal is not None:
-        # Check if TP-based signal is opposite to current trade
-        if trade['signal'] == 1 and tp_based_signal == 0:  # BUY trade, TP-based signal is SELL
+    if EARLY_STOP_OPPOSITE_SIGNAL and model_predicted_signal is not None:
+        # Check if model predicted signal is opposite to current trade
+        if trade['signal'] == 1 and model_predicted_signal == 0:  # BUY trade, model predicts SELL
             opposite_signal_condition = True
-        elif trade['signal'] == 0 and tp_based_signal == 1:  # SELL trade, TP-based signal is BUY
+        elif trade['signal'] == 0 and model_predicted_signal == 1:  # SELL trade, model predicts BUY
             opposite_signal_condition = True
     
     # Early stop only if BOTH conditions are True
     if time_condition and opposite_signal_condition:
-        logging.warning(f"🛑 Early stop: Trade has been red for {duration_minutes:.1f} minutes AND TP-based signal is opposite (loss: {pnl_pct:.2f}%)")
+        logging.warning(f"🛑 Early stop: Trade has been red for {duration_minutes:.1f} minutes ({duration_minutes/60:.1f} hours) AND model predicts opposite signal (loss: {pnl_pct:.2f}%)")
         return True
     
     return False
+
+def check_profitable_trade_tp_signal_exit(trades_list, current_price, tp_based_signal):
+    """
+    Early profit-taking: Close profitable trades when TP-based signal is opposite.
+    
+    Rules:
+    - If TP-based signal is opposite to trade direction
+    - AND trade has profit PnL >= 0.15%
+    - Then close the trade to lock in profits
+    
+    Args:
+        trades_list: List of active trades
+        current_price: Current market price
+        tp_based_signal: TP-based signal (0=SELL, 1=BUY)
+    
+    Returns:
+        tuple: (trade_to_close_index, trade_to_close) or (None, None) if no trade should be closed
+    """
+    if not trades_list or tp_based_signal is None:
+        return None, None
+    
+    signal_map = {0: 'SELL', 1: 'BUY'}
+    PROFIT_THRESHOLD_PCT = 0.15  # Close trades with >= 0.15% profit
+    
+    # Check all trades for opposite TP-based signal and sufficient profit
+    for i, trade in enumerate(trades_list):
+        # Check if TP-based signal is opposite to trade direction
+        is_opposite = False
+        if trade['signal'] == 1 and tp_based_signal == 0:  # BUY trade, TP-based signal is SELL
+            is_opposite = True
+        elif trade['signal'] == 0 and tp_based_signal == 1:  # SELL trade, TP-based signal is BUY
+            is_opposite = True
+        
+        if is_opposite:
+            # Calculate PnL
+            pnl_pct, pnl_usdt = calculate_unrealized_pnl(trade, current_price)
+            
+            # Check if trade is profitable and meets threshold
+            if pnl_pct >= PROFIT_THRESHOLD_PCT:
+                logging.warning(f"💰 Early Profit-Taking: Closing {signal_map[trade['signal']]} trade "
+                              f"(entry: ${trade['entry_price']:.2f}) with profit {pnl_pct:+.2f}% "
+                              f"(${pnl_usdt:+.2f}) because TP-based signal is opposite ({signal_map[tp_based_signal]})")
+                return i, trade
+    
+    return None, None
 
 def check_profitable_trade_risk_management(trades_list, current_price, predicted_signal):
     """
