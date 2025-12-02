@@ -44,7 +44,7 @@ The core of the predictor is a `CryptoPredicter` class based on `torch.nn.Transf
 ## 🚀 How to Use
 
 ### Prerequisites
-*   Python 3.8+
+*   Python 3.11.0
 *   MEXC Account (for API access)
 
 ### 1. Installation

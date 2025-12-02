@@ -147,8 +147,8 @@ def main():
     # Track model refinement timing
     last_refinement_time = None  # Will be set on first refinement
 
-    # Load daily trading stats
-    daily_stats = load_stats()
+    # Initialize daily trading stats from trades_log.json
+    daily_stats = initialize_stats_from_trades_log()  # This already saves all stats
     
     # Reconcile any leftover trades from previous run using the latest historical data
     active_trades, simulated_trades, daily_stats, trade_counter = reconcile_trades_on_startup(
@@ -162,9 +162,8 @@ def main():
             if daily_stats.get('date') != today:
                 logging.info(f"New day ({today}). Resetting daily stats.")
                 save_stats(daily_stats) # Save previous day's stats one last time
-                daily_stats = {
-                    "date": today, "successful_trades": 0, "failed_trades": 0, "total_profit_usdt": 0.0
-                }
+                # Load stats to get today's entry (or create new one)
+                daily_stats = load_stats()
 
             # Display TEST mode warning
             if TEST:
@@ -278,6 +277,7 @@ def main():
                     pnl = print_trade_result(trade, current_price, result='LOSS', simulated=TEST, trade_index=trade_index)
                     if not TEST:
                         update_stats(daily_stats, 'LOSS', pnl)
+                        save_stats(daily_stats)
                     trades_to_remove.append(i)
                     # Trigger retraining on first loss (don't retrain for every loss)
                     if not testing_model:
@@ -299,6 +299,7 @@ def main():
                     pnl = print_trade_result(trade, current_price, result='PROFIT', simulated=TEST, trade_index=trade_index)
                     if not TEST:
                         update_stats(daily_stats, 'PROFIT', pnl)
+                        save_stats(daily_stats)
                     trades_to_remove.append(i)
             
             # Remove completed trades (iterate in reverse to avoid index issues)
@@ -379,6 +380,7 @@ def main():
             # Use close_scaler for inverse transform of TP/SL (calculate early for early stop check)
             signal_mismatch = False  # Default to no mismatch
             tp_based_signal = predicted_signal  # Default to model signal
+            model_predicted_signal = predicted_signal  # Keep original model prediction (set early for exception handling)
             try:
                 if close_scaler is not None:
                     tp = close_scaler.inverse_transform(tp_scaled.detach().cpu().numpy().reshape(-1, 1))[0][0]
@@ -389,7 +391,7 @@ def main():
                     sl = current_price * 0.99
                 
                 # signal_map already defined above
-                model_predicted_signal = predicted_signal  # Keep original model prediction
+                # model_predicted_signal already set before try block
                 
                 # Focus trading on predicted TP: TP > entry → BUY, TP < entry → SELL
                 if tp > current_price:
@@ -446,6 +448,7 @@ def main():
                 # Default to BUY if TP calculation fails
                 predicted_signal = 1 if tp > current_price else 0
                 tp_based_signal = predicted_signal  # Update tp_based_signal if TP calc failed
+                # model_predicted_signal already set before try block
             
             # Check for early stops on active trades (using model's predicted signal)
             # Early stop triggers if trade has been losing for >5 hours AND model predicts opposite signal
@@ -457,11 +460,17 @@ def main():
                         if trade_index is None:
                             trade_counter += 1
                             trade_index = trade_counter
-                        pnl = print_trade_result(trade, current_price, result='LOSS', simulated=TEST, trade_index=trade_index, early_stop=True)
+                        
+                        # Calculate actual P&L to determine if it's a profit or loss
+                        pnl_pct, pnl_usdt = calculate_unrealized_pnl(trade, current_price)
+                        result = 'PROFIT' if pnl_usdt > 0 else 'LOSS'
+                        
+                        pnl = print_trade_result(trade, current_price, result=result, simulated=TEST, trade_index=trade_index, early_stop=True)
                         if not TEST:
-                            update_stats(daily_stats, 'LOSS', pnl)
+                            update_stats(daily_stats, result, pnl)
+                            save_stats(daily_stats)
                         trades_list.pop(i)
-                        logging.info("🛑 Trade closed due to early stop condition (loss >5 hours AND model predicts opposite)")
+                        logging.info(f"🛑 Trade closed due to early stop condition ({result.lower()}: {pnl_pct:+.2f}%)")
                         # Save current trades after closing
                         save_current_trades(active_trades, simulated_trades, trade_counter)
                         break  # Only close one trade per cycle to avoid index issues
@@ -487,6 +496,7 @@ def main():
                                             simulated=TEST, trade_index=trade_index, early_stop=False)
                     if not TEST:
                         update_stats(daily_stats, result, pnl)
+                        save_stats(daily_stats)
                     
                     trades_list.pop(tp_signal_exit_index)
                     logging.info(f"💰 Early profit-taking: Closed trade with {pnl_pct:+.2f}% profit due to opposite TP-based signal")
@@ -516,6 +526,7 @@ def main():
                                             simulated=TEST, trade_index=trade_index, early_stop=False)
                     if not TEST:
                         update_stats(daily_stats, result, pnl)
+                        save_stats(daily_stats)
                     
                     trades_list.pop(risk_mgmt_index)
                     logging.info(f"🛡️ Risk management: Closed profitable trade due to opposite signal prediction")
@@ -929,7 +940,7 @@ def simulate_trade(signal, quantity, entry_price, tp, sl, margin_usdt, notional_
         trade_info['confidence'] = confidence
     return trade_info
 
-def log_trade_to_file(trade_index, trade, exit_price, result, actual_pnl_usdt, pnl_percentage, price_change_pct, duration_minutes, simulated=False):
+def log_trade_to_file(trade_index, trade, exit_price, result, actual_pnl_usdt, pnl_percentage, price_change_pct, duration_minutes, simulated=False, early_stop=False):
     """Log trade details to a separate JSON file"""
     try:
         # Load existing trades if file exists and is valid
@@ -959,6 +970,10 @@ def log_trade_to_file(trade_index, trade, exit_price, result, actual_pnl_usdt, p
                            abs(t.get('entry price', 0) - float(trade['entry_price'])) < 0.01))]
         
         # Create trade log entry with simplified structure
+        signal_map = {0: 'SELL', 1: 'BUY'}
+        signal_value = trade.get('signal', -1)
+        if signal_value is None:
+            signal_value = -1
         trade_entry = {
             'index': trade_index,
             'time_stamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -967,8 +982,15 @@ def log_trade_to_file(trade_index, trade, exit_price, result, actual_pnl_usdt, p
             'PL in $': float(actual_pnl_usdt),
             'entry price': float(trade['entry_price']),
             'leverage': float(trade.get('leverage', 1)),
-            'margin': float(trade.get('margin_usdt', trade.get('trade_amount_usdt', 0)))
+            'margin': float(trade.get('margin_usdt', trade.get('trade_amount_usdt', 0))),
+            'signal': signal_map.get(signal_value, 'UNKNOWN'),  # BUY or SELL
+            'signal_value': int(signal_value),  # 0 for SELL, 1 for BUY
+            'early_stop': bool(early_stop)  # True if trade was closed due to early stop
         }
+        
+        # Add confidence if available
+        if 'confidence' in trade and trade['confidence'] is not None:
+            trade_entry['confidence'] = float(trade['confidence'])
         
         # Append to log
         trades_log.append(trade_entry)
@@ -1054,11 +1076,11 @@ def log_active_trades_to_file(trades_list, current_price, simulated=False):
                      not (t.get('status') == 'ACTIVE' and 
                           t.get('entry_price') not in active_entry_prices)]
         
-        # Save back to file
-        with open(TRADES_LOG_FILE, 'w', encoding='utf-8') as f:
+                      # Save back to file
+        with open(TRADES_LOG_FILE, 'w', encoding='utf-8') as f: 
             json.dump(trades_log, f, indent=2, ensure_ascii=False)
             
-    except Exception as e:
+    except Exception as e: 
         logging.error(f"Error logging active trades to file: {e}", exc_info=True)
 
 def print_trade_result(trade, exit_price, result, simulated=False, trade_index=None, early_stop=False):
@@ -1080,7 +1102,7 @@ def print_trade_result(trade, exit_price, result, simulated=False, trade_index=N
     
     # Log to separate file if trade_index is provided
     if trade_index is not None:
-        log_trade_to_file(trade_index, trade, exit_price, result, actual_pnl_usdt, pnl_percentage, price_change_pct, duration_minutes, simulated)
+        log_trade_to_file(trade_index, trade, exit_price, result, actual_pnl_usdt, pnl_percentage, price_change_pct, duration_minutes, simulated, early_stop)
     
     # Result emoji and color
     if result == 'PROFIT':
@@ -1660,32 +1682,83 @@ def save_current_trades(active_trades, simulated_trades, trade_counter):
         logging.error(f"Error saving {CURRENT_TRADES_FILE}: {e}", exc_info=True)
 
 def load_stats():
-    """Load daily stats from JSON file."""
+    """Load all daily stats from JSON file and return today's stats."""
     today = datetime.now().strftime("%Y-%m-%d")
+    all_stats = {}
+    
     if os.path.exists(STATS_FILE):
         with open(STATS_FILE, 'r') as f:
             try:
-                stats = json.load(f)
-                # If the date in file is not today, reset
-                if stats.get('date') == today:
-                    return stats
+                loaded_data = json.load(f)
+                # Handle old format (single day object) - convert to new format
+                if isinstance(loaded_data, dict):
+                    # Check if it's old format (has 'date' but keys are not dates)
+                    if 'date' in loaded_data and len(loaded_data) <= 5 and 'successful_trades' in loaded_data:
+                        # Old format detected, convert
+                        old_date = loaded_data.get('date', today)
+                        all_stats = {old_date: loaded_data}
+                    else:
+                        # New format - dictionary of dates
+                        all_stats = loaded_data
+                else:
+                    all_stats = {}
             except json.JSONDecodeError:
                 logging.warning(f"Could not decode {STATS_FILE}. Starting with fresh stats.")
-    # Default stats for a new day or new file
-    return {"date": today, "successful_trades": 0, "failed_trades": 0, "total_profit_usdt": 0.0}
-
-def save_stats(stats): 
-    """Save daily stats to JSON file."""
-    # Calculate win rate
-    total_trades = stats['successful_trades'] + stats['failed_trades']
-    if total_trades > 0:
-        stats['win_rate_pct'] = (stats['successful_trades'] / total_trades) * 100
-    else:
-        stats['win_rate_pct'] = 0.0
+                all_stats = {}
     
+    # Get or create today's stats
+    if today not in all_stats:
+        all_stats[today] = {
+            "date": today,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "successful_trades": 0,
+            "failed_trades": 0,
+            "total_profit_usdt": 0.0,
+            "win_rate_pct": 0.0
+        }
+    
+    return all_stats[today]
+
+def save_stats(today_stats): 
+    """Save daily stats to JSON file. Updates today's stats in the all-days structure."""
+    # Calculate win rate
+    total_trades = today_stats['successful_trades'] + today_stats['failed_trades']
+    if total_trades > 0:
+        today_stats['win_rate_pct'] = (today_stats['successful_trades'] / total_trades) * 100
+    else:
+        today_stats['win_rate_pct'] = 0.0
+    
+    # Update timestamp
+    today_stats['last_updated'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Load all existing stats
+    all_stats = {}
+    if os.path.exists(STATS_FILE):
+        with open(STATS_FILE, 'r') as f:
+            try:
+                loaded_data = json.load(f)
+                # Handle old format conversion
+                if isinstance(loaded_data, dict):
+                    if 'date' in loaded_data and len(loaded_data) <= 5 and 'successful_trades' in loaded_data:
+                        # Old format detected, convert
+                        old_date = loaded_data.get('date', today_stats['date'])
+                        all_stats = {old_date: loaded_data}
+                    else:
+                        # New format - dictionary of dates
+                        all_stats = loaded_data
+            except json.JSONDecodeError:
+                all_stats = {}
+    
+    # Update today's stats
+    date_key = today_stats['date']
+    all_stats[date_key] = today_stats
+    
+    # Save all stats
     with open(STATS_FILE, 'w') as f:
-        json.dump(stats, f, indent=4)
-    logging.info(f"📊 Daily stats saved: Wins={stats['successful_trades']}, Losses={stats['failed_trades']}, P&L=${stats['total_profit_usdt']:.2f}, Win Rate={stats['win_rate_pct']:.2f}%")
+        json.dump(all_stats, f, indent=4)
+    
+    logging.info(f"📊 Daily stats saved for {date_key}: Wins={today_stats['successful_trades']}, Losses={today_stats['failed_trades']}, P&L=${today_stats['total_profit_usdt']:.2f}, Win Rate={today_stats['win_rate_pct']:.2f}%")
 
 def update_stats(stats, result, pnl):
     """Update daily stats after a trade closes."""
@@ -1695,6 +1768,152 @@ def update_stats(stats, result, pnl):
         stats['failed_trades'] += 1
     
     stats['total_profit_usdt'] += pnl
+
+def initialize_stats_from_trades_log():
+    """Initialize trading stats from trades_log.json at bot startup. Processes all days."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    # Load existing stats to preserve previous days
+    all_stats = {}
+    if os.path.exists(STATS_FILE):
+        with open(STATS_FILE, 'r') as f:
+            try:
+                loaded_data = json.load(f)
+                # Handle old format conversion
+                if isinstance(loaded_data, dict):
+                    if 'date' in loaded_data and len(loaded_data) <= 5 and 'successful_trades' in loaded_data:
+                        # Old format detected, convert
+                        old_date = loaded_data.get('date', today)
+                        all_stats = {old_date: loaded_data}
+                    else:
+                        # New format - dictionary of dates
+                        all_stats = loaded_data
+            except json.JSONDecodeError:
+                all_stats = {}
+    
+    # Initialize today's stats
+    if today not in all_stats:
+        all_stats[today] = {
+            "date": today,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "successful_trades": 0,
+            "failed_trades": 0,
+            "total_profit_usdt": 0.0,
+            "win_rate_pct": 0.0
+        }
+    
+    if not os.path.exists(TRADES_LOG_FILE):
+        logging.info(f"📊 No {TRADES_LOG_FILE} found. Starting with fresh stats.")
+        # Save today's stats even if no trades log exists
+        with open(STATS_FILE, 'w') as f:
+            json.dump(all_stats, f, indent=4)
+        return all_stats[today]
+    
+    try:
+        with open(TRADES_LOG_FILE, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+            if not content or content == 'w':
+                logging.info(f"📊 {TRADES_LOG_FILE} is empty. Starting with fresh stats.")
+                # Save today's stats even if trades log is empty
+                with open(STATS_FILE, 'w') as f:
+                    json.dump(all_stats, f, indent=4)
+                return all_stats[today]
+            
+            trades_log = json.loads(content)
+            
+            if not isinstance(trades_log, list):
+                logging.warning(f"📊 {TRADES_LOG_FILE} format invalid. Starting with fresh stats.")
+                # Save today's stats even if trades log format is invalid
+                with open(STATS_FILE, 'w') as f:
+                    json.dump(all_stats, f, indent=4)
+                return all_stats[today]
+            
+            # Process all completed trades (exclude ACTIVE trades) and group by day
+            trades_by_day = {}
+            for trade in trades_log:
+                # Skip ACTIVE trades
+                if trade.get('status') == 'ACTIVE':
+                    continue
+                
+                trade_timestamp = trade.get('time_stamp', '')
+                if not trade_timestamp:
+                    continue
+                
+                # Extract date from timestamp (format: "YYYY-MM-DD HH:MM:SS")
+                try:
+                    trade_date = trade_timestamp.split(' ')[0]  # Get date part
+                    if trade_date not in trades_by_day:
+                        trades_by_day[trade_date] = {
+                            "successful_trades": 0,
+                            "failed_trades": 0,
+                            "total_profit_usdt": 0.0
+                        }
+                    
+                    result = trade.get('Profit/loss', '')
+                    pnl = trade.get('PL in $', 0.0)
+                    
+                    if result == 'PROFIT':
+                        trades_by_day[trade_date]['successful_trades'] += 1
+                    elif result == 'LOSS':
+                        trades_by_day[trade_date]['failed_trades'] += 1
+                    
+                    trades_by_day[trade_date]['total_profit_usdt'] += float(pnl)
+                except (IndexError, ValueError):
+                    continue
+            
+            # Update stats for each day found in trades_log
+            for date_key, day_stats in trades_by_day.items():
+                if date_key not in all_stats:
+                    all_stats[date_key] = {
+                        "date": date_key,
+                        "timestamp": f"{date_key} 00:00:00",
+                        "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "successful_trades": 0,
+                        "failed_trades": 0,
+                        "total_profit_usdt": 0.0,
+                        "win_rate_pct": 0.0
+                    }
+                
+                # Update stats for this day
+                all_stats[date_key]['successful_trades'] = day_stats['successful_trades']
+                all_stats[date_key]['failed_trades'] = day_stats['failed_trades']
+                all_stats[date_key]['total_profit_usdt'] = day_stats['total_profit_usdt']
+                
+                # Calculate win rate
+                total_trades = day_stats['successful_trades'] + day_stats['failed_trades']
+                if total_trades > 0:
+                    all_stats[date_key]['win_rate_pct'] = (day_stats['successful_trades'] / total_trades) * 100
+                else:
+                    all_stats[date_key]['win_rate_pct'] = 0.0
+            
+            # Save all stats to file
+            with open(STATS_FILE, 'w') as f:
+                json.dump(all_stats, f, indent=4)
+            
+            # Log summary
+            today_trades = trades_by_day.get(today, {})
+            today_total = today_trades.get('successful_trades', 0) + today_trades.get('failed_trades', 0)
+            logging.info(f"📊 Initialized stats from {TRADES_LOG_FILE}: "
+                        f"Processed {len(trades_by_day)} day(s). Today: "
+                        f"Wins={all_stats[today]['successful_trades']}, Losses={all_stats[today]['failed_trades']}, "
+                        f"P&L=${all_stats[today]['total_profit_usdt']:.2f}, Win Rate={all_stats[today]['win_rate_pct']:.2f}% "
+                        f"({today_total} trades)")
+            
+            return all_stats[today]
+            
+    except (json.JSONDecodeError, ValueError) as e:
+        logging.warning(f"⚠️ Could not parse {TRADES_LOG_FILE}: {e}. Starting with fresh stats.")
+        # Save today's stats even if parsing fails
+        with open(STATS_FILE, 'w') as f:
+            json.dump(all_stats, f, indent=4)
+        return all_stats[today]
+    except Exception as e:
+        logging.error(f"Error reading {TRADES_LOG_FILE}: {e}. Starting with fresh stats.", exc_info=True)
+        # Save today's stats even if there's an error
+        with open(STATS_FILE, 'w') as f:
+            json.dump(all_stats, f, indent=4)
+        return all_stats[today]
 
 def load_price_history(max_rows=None):
     """Load training_data.csv for trade reconciliation."""
