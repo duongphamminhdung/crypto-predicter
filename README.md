@@ -32,12 +32,36 @@ This project utilizes a custom **Transformer** architecture (replacing the previ
 
 ## 🏗️ Model Architecture
 
-The core of the predictor is a `CryptoPredicter` class based on `torch.nn.TransformerEncoder`.
+The core of the predictor is the `CryptoPredicter` class in `model.py`, a **Transformer-based sequence model**:
 
-*   **Embedding**: Projects 93 input features into a high-dimensional space (`d_model=128`).
-*   **Positional Encoding**: Injects temporal order information since Transformers process data in parallel.
-*   **Encoder Layers**: Stack of Transformer Encoder layers with Multi-Head Attention (`nhead=8`) to weigh the importance of different past time steps.
-*   **Attention-Weighted Pooling**: Aggregates the sequence output with a time-decay bias, focusing more on recent events.
+*   **Input**:
+    *   Sequence of 1‑minute candles with ~93 engineered features.
+    *   Shape: `(batch, seq_len, input_size)`.
+*   **Feature Projection**:
+    *   Linear layer `input_projection: ℝ^{input_size} → ℝ^{d_model}` with `d_model=128`.
+*   **Positional Encoding**:
+    *   Sinusoidal positional encoding (Vaswani et al. 2017) via `PositionalEncoding(d_model, max_len=5000)`.
+    *   Injects time/ordering information into the feature embeddings.
+*   **Transformer Encoder Stack**:
+    *   `num_layers=4` encoder blocks.
+    *   Each block has:
+        *   Multi‑Head Self‑Attention (`nhead=8`, batch‑first).
+        *   Position‑wise feed‑forward MLP (`128 → 512 → 128`) with ReLU + Dropout.
+        *   Residual connections + LayerNorm around both attention and MLP.
+*   **Attention‑Weighted Pooling with Time Decay**:
+    *   Learnable attention scores per timestep (small MLP → scalar score).
+    *   Added to an exponential time‑decay bias so **recent timesteps are favored**.
+    *   Softmax over time → attention weights → weighted sum of encoder outputs → single vector per sequence.
+*   **Multi‑Head Output** (from the pooled representation):
+    *   `signal_head`: Linear → 2‑class softmax for **SELL / BUY** probabilities.
+    *   `tp_head`: Linear → 1 value for **Take Profit price**.
+    *   `sl_head`: Linear → 1 value for **Stop Loss price**.
+    *   In `predict_live.py`, **confidence** is defined as `max(signal_probs)` (the higher of SELL/BUY probabilities).
+*   **Training Objective**:
+    *   Joint loss = classification loss (CrossEntropy for signal) + regression loss (MSE for TP + SL).
+    *   Optional **time‑weighted training**: more recent samples get higher weight in the loss, so the model adapts faster to current market regimes.
+
+In short, the model looks at a rolling window of 1‑minute data, attends over the whole sequence, favors more recent context, and outputs both **direction (BUY/SELL)** and **price targets (TP/SL)** for each new decision point.
 
 ---
 
@@ -104,6 +128,13 @@ The `run.sh` script helps you manage the bot:
 *   **Auto-Tuning**: Implemented an automated pipeline that fine-tunes the model on the latest 500 minutes of data every hour.
 *   **Shadow Testing**: Added a parallel testing environment where new models compete against the active model before deployment.
 *   **Enhanced Logging**: Detailed JSON logging for individual trades (`trades_log.json`) and active positions.
+*   **Early-Stop Logic** (2025-11-30): Added smart early-stop rules that:
+    *   Close trades when PnL ≥ **0.15%** in the opposite TP-based direction (profit lock-in).
+    *   Close trades that stay in loss for **≥ 5 hours** *and* the model predicts the opposite direction.
+*   **Risk Stats & PnL Tracking** (2025-12-02):
+    *   `trading_stats.json` now aggregates daily results (wins, losses, PnL, win rate) from `trades_log.json`.
+    *   In **TEST mode**, a mock **$1000 balance** is tracked and updated after each trade to simulate real account behavior.
+*   **Stability & Dependency Fixes** (2025-12-01): Cleaned up indentation issues and updated dependencies to keep the environment reproducible.
 
 ---
 

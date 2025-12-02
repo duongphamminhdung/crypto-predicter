@@ -537,7 +537,11 @@ def main():
             
                                                                               # Calculate recommended trade amount based on confidence and balance
             try:
-                usdt_balance = exchange.get_usdt_balance()
+                            # Use simulated balance from stats in TEST mode, real balance in live mode
+                if TEST:
+                    usdt_balance = daily_stats.get('balance', 1000.0)
+                else:
+                    usdt_balance = exchange.get_usdt_balance()
                 # Pass signal alignment info: higher investment when model signal matches TP-based signal
                 signal_aligned = not signal_mismatch  # True if signals match
                 trade_percentage, trade_margin_usdt, trade_quantity_btc, trade_notional_usdt, trade_leverage = calculate_trade_amount(
@@ -626,8 +630,13 @@ def main():
                 # Continue with test model comparison after adjustments
                 # Pass signal alignment info for test model
                 test_signal_aligned = not test_signal_mismatch  # True if signals match
+                # Use simulated balance from stats in TEST mode, real balance in live mode
+                if TEST:
+                    test_usdt_balance = daily_stats.get('balance', 1000.0)
+                else:
+                    test_usdt_balance = usdt_balance
                 test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc, test_trade_notional_usdt, test_trade_leverage = calculate_trade_amount(
-                    test_confidence, usdt_balance, current_price, test_sl, signal_aligned=test_signal_aligned
+                    test_confidence, test_usdt_balance, current_price, test_sl, signal_aligned=test_signal_aligned
                 )
                 
                 # Display test model prediction
@@ -635,7 +644,7 @@ def main():
                 logging.info("🧪 TEST MODEL PREDICTION")
                 logging.info("="*60)
                 print_prediction(test_predicted_signal, test_confidence, test_tp, test_sl, 
-                               test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc, test_trade_notional_usdt, test_trade_leverage, usdt_balance)
+                               test_trade_percentage, test_trade_amount_usdt, test_trade_quantity_btc, test_trade_notional_usdt, test_trade_leverage, test_usdt_balance)
                 
                 test_model_predictions.append({
                     'signal'     : test_predicted_signal,
@@ -975,17 +984,17 @@ def log_trade_to_file(trade_index, trade, exit_price, result, actual_pnl_usdt, p
         if signal_value is None:
             signal_value = -1
         trade_entry = {
-            'index': trade_index,
-            'time_stamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'Profit/loss': result,  # 'PROFIT' or 'LOSS'
+            'index'        : trade_index,
+            'time_stamp'   : datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'Profit/loss'  : result,                                                               # 'PROFIT' or 'LOSS'
             'PL percentage': float(pnl_percentage),
-            'PL in $': float(actual_pnl_usdt),
-            'entry price': float(trade['entry_price']),
-            'leverage': float(trade.get('leverage', 1)),
-            'margin': float(trade.get('margin_usdt', trade.get('trade_amount_usdt', 0))),
-            'signal': signal_map.get(signal_value, 'UNKNOWN'),  # BUY or SELL
-            'signal_value': int(signal_value),  # 0 for SELL, 1 for BUY
-            'early_stop': bool(early_stop)  # True if trade was closed due to early stop
+            'PL in $'      : float(actual_pnl_usdt),
+            'entry price'  : float(trade['entry_price']),
+            'leverage'     : float(trade.get('leverage', 1)),
+            'margin'       : float(trade.get('margin_usdt', trade.get('trade_amount_usdt', 0))),
+            'signal'       : signal_map.get(signal_value, 'UNKNOWN'),                              # BUY or SELL
+            'signal_value' : int(signal_value),                                                    # 0 for SELL, 1 for BUY
+            'early_stop'   : bool(early_stop)                                                      # True if trade was closed due to early stop
         }
         
         # Add confidence if available
@@ -1708,6 +1717,18 @@ def load_stats():
     
     # Get or create today's stats
     if today not in all_stats:
+        # Initialize balance only in TEST mode
+        balance_value = None
+        if TEST:
+            # Get previous day's balance or initialize to $1000
+            previous_balance = 1000.0  # Default starting balance
+            if all_stats:
+                # Get the most recent day's balance
+                sorted_dates = sorted(all_stats.keys(), reverse=True)
+                if sorted_dates:
+                    previous_balance = all_stats[sorted_dates[0]].get('balance', 1000.0)
+            balance_value = previous_balance
+        
         all_stats[today] = {
             "date": today,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1717,6 +1738,10 @@ def load_stats():
             "total_profit_usdt": 0.0,
             "win_rate_pct": 0.0
         }
+        
+        # Add balance only in TEST mode
+        if TEST and balance_value is not None:
+            all_stats[today]["balance"] = balance_value
     
     return all_stats[today]
 
@@ -1758,7 +1783,12 @@ def save_stats(today_stats):
     with open(STATS_FILE, 'w') as f:
         json.dump(all_stats, f, indent=4)
     
-    logging.info(f"📊 Daily stats saved for {date_key}: Wins={today_stats['successful_trades']}, Losses={today_stats['failed_trades']}, P&L=${today_stats['total_profit_usdt']:.2f}, Win Rate={today_stats['win_rate_pct']:.2f}%")
+    log_msg = (f"📊 Daily stats saved for {date_key}: Wins={today_stats['successful_trades']}, Losses={today_stats['failed_trades']}, "
+              f"P&L=${today_stats['total_profit_usdt']:.2f}, Win Rate={today_stats['win_rate_pct']:.2f}%")
+    if TEST:
+        balance = today_stats.get('balance', 1000.0)
+        log_msg += f", Balance=${balance:.2f}"
+    logging.info(log_msg)
 
 def update_stats(stats, result, pnl):
     """Update daily stats after a trade closes."""
@@ -1768,6 +1798,16 @@ def update_stats(stats, result, pnl):
         stats['failed_trades'] += 1
     
     stats['total_profit_usdt'] += pnl
+    
+    # Update balance only in TEST mode (mock balance simulation)
+    if TEST:
+        if 'balance' not in stats:
+            stats['balance'] = 1000.0  # Initialize if missing
+        stats['balance'] += pnl
+        
+        # Ensure balance doesn't go negative (minimum $0)
+        if stats['balance'] < 0:
+            stats['balance'] = 0.0
 
 def initialize_stats_from_trades_log():
     """Initialize trading stats from trades_log.json at bot startup. Processes all days."""
@@ -1793,6 +1833,14 @@ def initialize_stats_from_trades_log():
     
     # Initialize today's stats
     if today not in all_stats:
+        # Get previous day's balance or initialize to $1000
+        previous_balance = 1000.0  # Default starting balance
+        if all_stats:
+            # Get the most recent day's balance
+            sorted_dates = sorted(all_stats.keys(), reverse=True)
+            if sorted_dates:
+                previous_balance = all_stats[sorted_dates[0]].get('balance', 1000.0)
+        
         all_stats[today] = {
             "date": today,
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1800,7 +1848,8 @@ def initialize_stats_from_trades_log():
             "successful_trades": 0,
             "failed_trades": 0,
             "total_profit_usdt": 0.0,
-            "win_rate_pct": 0.0
+            "win_rate_pct": 0.0,
+            "balance": previous_balance  # Carry forward balance from previous day
         }
     
     if not os.path.exists(TRADES_LOG_FILE):
@@ -1862,8 +1911,24 @@ def initialize_stats_from_trades_log():
                 except (IndexError, ValueError):
                     continue
             
-            # Update stats for each day found in trades_log
-            for date_key, day_stats in trades_by_day.items():
+            # Calculate balance by processing trades chronologically (only in TEST mode)
+            sorted_trade_dates = sorted(trades_by_day.keys())
+            if TEST:
+                # Start with initial balance of $1000 or previous day's balance
+                initial_balance = 1000.0
+                if all_stats:
+                    sorted_dates = sorted(all_stats.keys())
+                    if sorted_dates:
+                        initial_balance = all_stats[sorted_dates[0]].get('balance', 1000.0)
+                
+                # Process trades chronologically to calculate balance
+                running_balance = initial_balance
+            else:
+                running_balance = None  # Not used when TEST=False, but initialize for clarity
+            
+            for date_key in sorted_trade_dates:
+                day_stats = trades_by_day[date_key]
+                
                 if date_key not in all_stats:
                     all_stats[date_key] = {
                         "date": date_key,
@@ -1874,11 +1939,21 @@ def initialize_stats_from_trades_log():
                         "total_profit_usdt": 0.0,
                         "win_rate_pct": 0.0
                     }
+                    # Add balance only in TEST mode
+                    if TEST:
+                        all_stats[date_key]["balance"] = running_balance
                 
                 # Update stats for this day
                 all_stats[date_key]['successful_trades'] = day_stats['successful_trades']
                 all_stats[date_key]['failed_trades'] = day_stats['failed_trades']
                 all_stats[date_key]['total_profit_usdt'] = day_stats['total_profit_usdt']
+                
+                # Update balance by adding P&L for this day (only in TEST mode)
+                if TEST:
+                    running_balance += day_stats['total_profit_usdt']
+                    if running_balance < 0:
+                        running_balance = 0.0
+                    all_stats[date_key]['balance'] = running_balance
                 
                 # Calculate win rate
                 total_trades = day_stats['successful_trades'] + day_stats['failed_trades']
@@ -1894,11 +1969,15 @@ def initialize_stats_from_trades_log():
             # Log summary
             today_trades = trades_by_day.get(today, {})
             today_total = today_trades.get('successful_trades', 0) + today_trades.get('failed_trades', 0)
-            logging.info(f"📊 Initialized stats from {TRADES_LOG_FILE}: "
-                        f"Processed {len(trades_by_day)} day(s). Today: "
-                        f"Wins={all_stats[today]['successful_trades']}, Losses={all_stats[today]['failed_trades']}, "
-                        f"P&L=${all_stats[today]['total_profit_usdt']:.2f}, Win Rate={all_stats[today]['win_rate_pct']:.2f}% "
-                        f"({today_total} trades)")
+            log_msg = (f"📊 Initialized stats from {TRADES_LOG_FILE}: "
+                      f"Processed {len(trades_by_day)} day(s). Today: "
+                      f"Wins={all_stats[today]['successful_trades']}, Losses={all_stats[today]['failed_trades']}, "
+                      f"P&L=${all_stats[today]['total_profit_usdt']:.2f}, Win Rate={all_stats[today]['win_rate_pct']:.2f}%")
+            if TEST:
+                balance = all_stats[today].get('balance', 1000.0)
+                log_msg += f", Balance=${balance:.2f}"
+            log_msg += f" ({today_total} trades)"
+            logging.info(log_msg)
             
             return all_stats[today]
             
