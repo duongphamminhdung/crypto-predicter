@@ -26,3 +26,13 @@ trades_log.json
 # Configuration files
 config.api
 trading_bot_live.txt
+
+# OS junk
+.DS_Store
+
+# Test artifacts
+test_*.py
+
+# Documentation (keep README.md)
+*.md
+!README.md

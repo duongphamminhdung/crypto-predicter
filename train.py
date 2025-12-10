@@ -206,7 +206,9 @@ def main():
         
         print("🎯 Fine-tuning with latest historical data (time-weighted)...")
         try:
-            predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, epochs=5, lr=0.0001, time_weighted=True)
+            predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, 
+                                epochs=5, lr=0.0001, time_weighted=True, 
+                                batch_size=32, label_smoothing=0.1)
             print("✅ Fine-tuning complete.")
         except ValueError as err:
             if "Not enough data" in str(err):
@@ -220,7 +222,9 @@ def main():
     else:
         # Initial training from scratch
         print("🏗️  Training model from scratch...")
-        predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, epochs=20, lr=0.0005, time_weighted=False)
+        predicter.train_model(X_train, y_train_signal, y_train_tp, y_train_sl, 
+                            epochs=20, lr=0.0005, time_weighted=False,
+                            batch_size=32, label_smoothing=0.1)
         print("✅ Model training complete.")
 
     # Save the trained model and the scaler

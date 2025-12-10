@@ -86,7 +86,7 @@ def get_feature_columns():
                                     # Futures trading uses leverage and is EXTREMELY risky!
                                     # Only trade with very high confidence to minimize risk
 CONFIDENCE_THRESHOLD_TRADE  = 0.70  # Only trade when confidence > 70%
-CONFIDENCE_THRESHOLD_TEST   = 0.70  # Trigger model testing when below 70%
+CONFIDENCE_THRESHOLD_TEST   = 0.55  # Trigger model testing when below 55%
 MAX_POSITION_RISK           = 0.10  # Max 10% of balance at risk per trade
 MAX_LEVERAGE                = 75    # Exchange leverage cap
                                     # Early stop parameters
@@ -359,7 +359,8 @@ def main():
             # Create tensor with shape (1, look_back, num_features)
             try:
                 X_pred = torch.from_numpy(features_scaled).float().unsqueeze(0)
-                signal, signal_probs, tp_scaled, sl_scaled = model.predict(X_pred)
+                # Use Monte Carlo dropout with 10 samples for uncertainty estimation
+                signal, signal_probs, tp_scaled, sl_scaled, uncertainty = model.predict(X_pred, mc_samples=10)
             except Exception as e:
                 logging.error(f"Failed to make prediction: {e}", exc_info=True)
                 time.sleep(60)
@@ -372,10 +373,21 @@ def main():
             confidence = signal_probs.max().item()  # Maximum probability = confidence
             predicted_signal = signal.item()
             
+            # Calculate uncertainty metric (standard deviation of predictions)
+            uncertainty_score = uncertainty[0].max().item()  # Max uncertainty across classes
+            
+            # Adjust confidence based on uncertainty
+            # Higher uncertainty -> lower effective confidence
+            effective_confidence = confidence * (1 - uncertainty_score)
+            
             # Log detailed probability breakdown for debugging low confidence
-            if confidence < 0.75:  # Log when confidence is moderate/low
+            if effective_confidence < 0.75:  # Log when confidence is moderate/low
                 logging.debug(f"🔍 Low confidence breakdown: SELL={sell_prob:.3f}, BUY={buy_prob:.3f}, "
-                            f"Max (confidence)={confidence:.3f}, Predicted={signal_map[predicted_signal]}")
+                            f"Max (confidence)={confidence:.3f}, Uncertainty={uncertainty_score:.3f}, "
+                            f"Effective Conf={effective_confidence:.3f}, Predicted={signal_map[predicted_signal]}")
+            
+            # Use effective confidence for trading decisions
+            confidence = effective_confidence
             
             # Use close_scaler for inverse transform of TP/SL (calculate early for early stop check)
             signal_mismatch = False  # Default to no mismatch
@@ -574,8 +586,10 @@ def main():
                 })
                 
                 # Also get test model prediction (same input features)
-                test_signal, test_signal_probs, test_tp_scaled, test_sl_scaled = test_model.predict(X_pred)
-                test_confidence = test_signal_probs.max().item()
+                test_signal, test_signal_probs, test_tp_scaled, test_sl_scaled, test_uncertainty = test_model.predict(X_pred, mc_samples=10)
+                test_confidence_raw = test_signal_probs.max().item()
+                test_uncertainty_score = test_uncertainty[0].max().item()
+                test_confidence = test_confidence_raw * (1 - test_uncertainty_score)  # Adjust for uncertainty
                 test_predicted_signal = test_signal.item()
                 
                 if close_scaler is not None:
@@ -1570,6 +1584,9 @@ def load_current_trades():
     Load current/open trades from current_trades.json file.
     This allows the bot to restore active trades after a restart.
     
+    Also fetches historical data since trade entry and appends to training_data.csv,
+    checking when TP/SL was hit.
+    
     Returns:
         tuple: (active_trades, simulated_trades, trade_counter)
     """
@@ -1627,6 +1644,10 @@ def load_current_trades():
             if trade_counter > 0:
                 logging.info(f"📊 Trade counter restored to {trade_counter}")
             
+            # Process trades to append historical data and check TP/SL hit times
+            if active_trades or simulated_trades:
+                _process_historical_trade_data(active_trades + simulated_trades)
+            
     except (json.JSONDecodeError, ValueError, KeyError) as e:
         logging.warning(f"⚠️ Could not parse {CURRENT_TRADES_FILE}: {e}. Starting with empty trade lists.")
         return active_trades, simulated_trades, trade_counter
@@ -1635,6 +1656,126 @@ def load_current_trades():
         return active_trades, simulated_trades, trade_counter
     
     return active_trades, simulated_trades, trade_counter
+
+
+def _process_historical_trade_data(trades):
+    """
+    For each loaded trade:
+    1. Fetch historical data from entry time to now
+    2. Find earliest time when TP or SL was hit
+    3. Append new data to training_data.csv
+    
+    Args:
+        trades: List of trade dictionaries
+    """
+    if not trades:
+        return
+    
+    try:
+        client = MEXCClient()
+        
+        # Load existing training data if available
+        training_data_path = 'training_data.csv'
+        if os.path.exists(training_data_path):
+            existing_df = pd.read_csv(training_data_path, index_col=0, parse_dates=True)
+            last_timestamp = int(existing_df.index[-1].timestamp())
+            logging.info(f"📊 Loaded existing training data: {len(existing_df)} rows, last timestamp: {existing_df.index[-1]}")
+        else:
+            existing_df = None
+            last_timestamp = None
+        
+        all_new_data = []
+        
+        for trade in trades:
+            try:
+                entry_time = trade.get('entry_time')
+                entry_price = trade.get('entry_price')
+                tp = trade.get('tp')
+                sl = trade.get('sl')
+                signal = trade.get('signal')  # 'BUY' or 'SELL'
+                
+                if not all([entry_time, entry_price, tp, sl, signal]):
+                    logging.warning(f"⚠️ Trade missing required fields, skipping")
+                    continue
+                
+                # Only fetch data we don't already have
+                start_time = int(entry_time)
+                if last_timestamp and start_time <= last_timestamp:
+                    start_time = last_timestamp + 60  # Start 1 minute after last data
+                
+                # Fetch data from entry time to now
+                logging.info(f"📥 Fetching historical data for trade from {datetime.fromtimestamp(start_time)}")
+                new_df = client.get_kline_data(symbol='BTC_USDT', interval='Min1', start=start_time)
+                
+                if new_df is None or new_df.empty:
+                    logging.warning(f"⚠️ No historical data fetched for trade")
+                    continue
+                
+                new_df['open_time'] = pd.to_datetime(new_df['open_time'])
+                new_df.set_index('open_time', inplace=True)
+                
+                # Find when TP or SL was hit
+                tp_hit_time = None
+                sl_hit_time = None
+                
+                if signal == 'BUY' or signal == 1:
+                    # For BUY: TP is above entry, SL is below
+                    tp_hit = new_df[new_df['high'] >= tp]
+                    sl_hit = new_df[new_df['low'] <= sl]
+                elif signal == 'SELL' or signal == 0:
+                    # For SELL: TP is below entry, SL is above
+                    tp_hit = new_df[new_df['low'] <= tp]
+                    sl_hit = new_df[new_df['high'] >= sl]
+                else:
+                    logging.warning(f"⚠️ Unknown signal type: {signal}")
+                    continue
+                
+                if not tp_hit.empty:
+                    tp_hit_time = tp_hit.index[0]
+                if not sl_hit.empty:
+                    sl_hit_time = sl_hit.index[0]
+                
+                # Log the earliest hit
+                if tp_hit_time and sl_hit_time:
+                    earliest_hit = min(tp_hit_time, sl_hit_time)
+                    hit_type = "TP" if earliest_hit == tp_hit_time else "SL"
+                    logging.info(f"✅ Trade {signal} from {datetime.fromtimestamp(entry_time)}: {hit_type} hit at {earliest_hit}")
+                elif tp_hit_time:
+                    logging.info(f"✅ Trade {signal} from {datetime.fromtimestamp(entry_time)}: TP hit at {tp_hit_time}")
+                elif sl_hit_time:
+                    logging.info(f"⚠️ Trade {signal} from {datetime.fromtimestamp(entry_time)}: SL hit at {sl_hit_time}")
+                else:
+                    logging.info(f"⏳ Trade {signal} from {datetime.fromtimestamp(entry_time)}: Neither TP nor SL hit yet")
+                
+                # Add to collection for appending
+                all_new_data.append(new_df)
+                
+            except Exception as e:
+                logging.error(f"❌ Error processing trade: {e}", exc_info=True)
+                continue
+        
+        # Append all new data to training_data.csv
+        if all_new_data:
+            combined_new_df = pd.concat(all_new_data, ignore_index=False)
+            combined_new_df = combined_new_df[~combined_new_df.index.duplicated(keep='first')]
+            combined_new_df = combined_new_df.sort_index()
+            
+            if existing_df is not None:
+                # Merge with existing, removing duplicates
+                combined_df = pd.concat([existing_df, combined_new_df])
+                combined_df = combined_df[~combined_df.index.duplicated(keep='first')]
+                combined_df = combined_df.sort_index()
+            else:
+                combined_df = combined_new_df
+            
+            # Save back to training_data.csv
+            combined_df.to_csv(training_data_path)
+            logging.info(f"💾 Appended {len(combined_new_df)} new rows to training_data.csv (total: {len(combined_df)} rows)")
+        else:
+            logging.info(f"ℹ️ No new data to append to training_data.csv")
+            
+    except Exception as e:
+        logging.error(f"❌ Error processing historical trade data: {e}", exc_info=True)
 
 def save_current_trades(active_trades, simulated_trades, trade_counter):
     """
@@ -2026,8 +2167,8 @@ def determine_trade_outcome_from_history(trade, price_history):
         low = row.get('low')
         if pd.isna(high) or pd.isna(low):
             continue
-        if trade['signal'] == 1:  # BUY
-            if low <= trade['sl']:
+        if trade['signal'] == 1:            # BUY
+        if low <= trade['sl']:
                 return trade['sl'], 'LOSS'
             if high >= trade['tp']:
                 return trade['tp'], 'PROFIT'
