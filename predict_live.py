@@ -263,7 +263,6 @@ def main():
             # Check all active trades (real or simulated) for completion or loss
             trades_list = simulated_trades if TEST else active_trades
             trades_to_remove = []
-            
             for i, trade in enumerate(trades_list):
                 trade_loss   = check_trade_loss(trade, current_price)
                 trade_profit = is_trade_complete(trade, current_price)
@@ -359,22 +358,29 @@ def main():
             # Create tensor with shape (1, look_back, num_features)
             try:
                 X_pred = torch.from_numpy(features_scaled).float().unsqueeze(0)
-                # Use Monte Carlo dropout with 10 samples for uncertainty estimation
-                signal, signal_probs, tp_scaled, sl_scaled, uncertainty = model.predict(X_pred, mc_samples=10)
+                # Use Monte Carlo dropout with 15 samples for uncertainty estimation
+                signal, signal_probs, tp_scaled, sl_scaled, uncertainty = model.predict(X_pred, mc_samples=15)
             except Exception as e:
                 logging.error(f"Failed to make prediction: {e}", exc_info=True)
                 time.sleep(60)
                 continue
             
-            # Extract probabilities: signal_probs is softmax output [SELL_prob, BUY_prob]
-            signal_map = {0: 'SELL', 1: 'BUY'}  # Define signal map early
-            sell_prob = signal_probs[0][0].item()  # Probability of SELL
-            buy_prob = signal_probs[0][1].item()   # Probability of BUY
+                                                    # Extract probabilities: signal_probs is softmax output [SELL_prob, BUY_prob]
+            signal_map = {0: 'SELL', 1: 'BUY'}      # Define signal map early
+            sell_prob  = signal_probs[0][0].item()  # Probability of SELL
+            buy_prob   = signal_probs[0][1].item()  # Probability of BUY
             confidence = signal_probs.max().item()  # Maximum probability = confidence
             predicted_signal = signal.item()
             
             # Calculate uncertainty metric (standard deviation of predictions)
             uncertainty_score = uncertainty[0].max().item()  # Max uncertainty across classes
+            
+            # Diagnostic: Log if uncertainty is suspiciously low (MC dropout may not be working)
+            if uncertainty_score < 1e-5:
+                logging.warning(f"⚠️ MC Dropout Alert: Very low uncertainty ({uncertainty_score:.2e}). "
+                              f"MC samples: 15, Model training mode: {model.training}, "
+                              f"use_dropout_inference: {model.use_dropout_inference}, "
+                              f"Dropout rate: {model.dropout_rate}")
             
             # Adjust confidence based on uncertainty
             # Higher uncertainty -> lower effective confidence
@@ -389,15 +395,15 @@ def main():
             # Use effective confidence for trading decisions
             confidence = effective_confidence
             
-            # Use close_scaler for inverse transform of TP/SL (calculate early for early stop check)
-            signal_mismatch = False  # Default to no mismatch
-            tp_based_signal = predicted_signal  # Default to model signal
+                                                       # Use close_scaler for inverse transform of TP/SL (calculate early for early stop check)
+            signal_mismatch        = False             # Default to no mismatch
+            tp_based_signal        = predicted_signal  # Default to model signal
             model_predicted_signal = predicted_signal  # Keep original model prediction (set early for exception handling)
             try:
                 if close_scaler is not None:
                     tp = close_scaler.inverse_transform(tp_scaled.detach().cpu().numpy().reshape(-1, 1))[0][0]
                     sl = close_scaler.inverse_transform(sl_scaled.detach().cpu().numpy().reshape(-1, 1))[0][0]
-                else:
+                else: 
                     # Fallback: use current price with percentage
                     tp = current_price * 1.01
                     sl = current_price * 0.99
@@ -586,7 +592,7 @@ def main():
                 })
                 
                 # Also get test model prediction (same input features)
-                test_signal, test_signal_probs, test_tp_scaled, test_sl_scaled, test_uncertainty = test_model.predict(X_pred, mc_samples=10)
+                test_signal, test_signal_probs, test_tp_scaled, test_sl_scaled, test_uncertainty = test_model.predict(X_pred, mc_samples=15)
                 test_confidence_raw = test_signal_probs.max().item()
                 test_uncertainty_score = test_uncertainty[0].max().item()
                 test_confidence = test_confidence_raw * (1 - test_uncertainty_score)  # Adjust for uncertainty
@@ -676,6 +682,18 @@ def main():
                 if confidence >= CONFIDENCE_THRESHOLD_TRADE:
                     # Check if we should skip this trade: only open new trade if entry is better OR confidence is higher (>=0.9)
                     should_skip = False
+                    
+                    # Count trades with confidence=1.0 from trades_log.json
+                    confidence_1_count = 0
+                    if os.path.exists(TRADES_LOG_FILE):
+                        try:
+                            with open(TRADES_LOG_FILE, 'r', encoding='utf-8') as f:
+                                trades_log = json.load(f)
+                                if isinstance(trades_log, list):
+                                    confidence_1_count = sum(1 for t in trades_log if t.get('confidence', 0) >= 0.9999)
+                        except:
+                            pass
+                    
                     for trade in trades_list:
                         if trade['signal'] == predicted_signal:  # Same signal type
                             existing_confidence = trade.get('confidence', 0.0)
@@ -687,6 +705,12 @@ def main():
                                 entry_worse = current_price <= trade['entry_price']
                             
                             if entry_worse:
+                                # Special check: skip if confidence=1.0, entry worse, and already 2+ trades with conf=1.0
+                                if confidence >= 0.9999 and entry_worse and confidence_1_count >= 2:
+                                    should_skip = True
+                                    logging.info(f"⏭️  Skipping {signal_map[predicted_signal]} trade: Confidence=1.0, entry worse (${current_price:.2f} vs ${trade['entry_price']:.2f}), "
+                                               f"and already {confidence_1_count} trades with confidence=1.0")
+                                    break
                                 # Entry is worse, but check if confidence is high enough to override
                                 if confidence >= 0.9 and confidence > existing_confidence:
                                     # High confidence and higher than existing - allow trade
@@ -728,6 +752,18 @@ def main():
                 # ONLY trade with high confidence (>70%) for futures
                 # Check if we should skip this trade: only open new trade if entry is better OR confidence is higher (>=0.9)
                 should_skip = False
+                
+                # Count trades with confidence=1.0 from trades_log.json
+                confidence_1_count = 0
+                if os.path.exists(TRADES_LOG_FILE):
+                    try:
+                        with open(TRADES_LOG_FILE, 'r', encoding='utf-8') as f:
+                            trades_log = json.load(f)
+                            if isinstance(trades_log, list):
+                                confidence_1_count = sum(1 for t in trades_log if t.get('confidence', 0) >= 0.9999)
+                    except:
+                        pass
+                
                 for trade in trades_list:
                     if trade['signal'] == predicted_signal:  # Same signal type
                         existing_confidence = trade.get('confidence', 0.0)
@@ -739,6 +775,12 @@ def main():
                             entry_worse = current_price <= trade['entry_price']
                         
                         if entry_worse:
+                            # Special check: skip if confidence=1.0, entry worse, and already 2+ trades with conf=1.0
+                            if confidence >= 0.9999 and entry_worse and confidence_1_count >= 2:
+                                should_skip = True
+                                logging.info(f"⏭️  Skipping {signal_map[predicted_signal]} trade: Confidence=1.0, entry worse (${current_price:.2f} vs ${trade['entry_price']:.2f}), "
+                                           f"and already {confidence_1_count} trades with confidence=1.0")
+                                break
                             # Entry is worse, but check if confidence is high enough to override
                             if confidence >= 0.9 and confidence >= existing_confidence:
                                 # High confidence and higher than existing - allow trade
@@ -966,6 +1008,15 @@ def simulate_trade(signal, quantity, entry_price, tp, sl, margin_usdt, notional_
 def log_trade_to_file(trade_index, trade, exit_price, result, actual_pnl_usdt, pnl_percentage, price_change_pct, duration_minutes, simulated=False, early_stop=False):
     """Log trade details to a separate JSON file"""
     try:
+        # Guard required fields to ensure re-loadable structure
+        required_fields = ['entry_price', 'entry_time', 'tp', 'sl', 'signal']
+        missing = [f for f in required_fields if f not in trade or trade[f] is None]
+        if missing:
+            logging.warning(f"⚠️ Cannot log trade #{trade_index}: missing fields {missing}")
+            return
+        
+        entry_time_dt = datetime.fromtimestamp(trade['entry_time'])
+        
         # Load existing trades if file exists and is valid
         trades_log = []
         if os.path.exists(TRADES_LOG_FILE):
@@ -1004,6 +1055,9 @@ def log_trade_to_file(trade_index, trade, exit_price, result, actual_pnl_usdt, p
             'PL percentage': float(pnl_percentage),
             'PL in $'      : float(actual_pnl_usdt),
             'entry price'  : float(trade['entry_price']),
+            'entry_time'   : entry_time_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            'tp'           : float(trade['tp']),
+            'sl'           : float(trade['sl']),
             'leverage'     : float(trade.get('leverage', 1)),
             'margin'       : float(trade.get('margin_usdt', trade.get('trade_amount_usdt', 0))),
             'signal'       : signal_map.get(signal_value, 'UNKNOWN'),                              # BUY or SELL
@@ -1047,6 +1101,13 @@ def log_active_trades_to_file(trades_list, current_price, simulated=False):
         
         # Update or add active trades
         for i, trade in enumerate(trades_list, 1):
+            # Guard required fields to ensure re-loadable structure
+            required_fields = ['entry_price', 'entry_time', 'tp', 'sl', 'signal']
+            missing = [f for f in required_fields if f not in trade or trade[f] is None]
+            if missing:
+                logging.warning(f"⚠️ Skipping active trade log (missing fields {missing})")
+                continue
+
             pnl_pct, unrealized_pnl_usdt = calculate_unrealized_pnl(trade, current_price)
             entry_time_str = datetime.fromtimestamp(trade['entry_time']).strftime('%Y-%m-%d %H:%M:%S')
             duration_minutes = int((time.time() - trade['entry_time']) / 60)
@@ -1079,6 +1140,9 @@ def log_active_trades_to_file(trades_list, current_price, simulated=False):
                     'current_price': float(current_price),
                     'take_profit': float(trade['tp']),
                     'stop_loss': float(trade['sl']),
+                    'entry_time': entry_time_str,
+                    'tp': float(trade['tp']),
+                    'sl': float(trade['sl']),
                     'quantity_btc': float(trade['quantity']),
                     'trade_amount_usdt': float(trade['trade_amount_usdt']),
                     'margin_usdt': float(trade.get('margin_usdt', trade.get('trade_amount_usdt', 0))),
@@ -1232,11 +1296,13 @@ def check_early_stop(trade, current_price, model_predicted_signal=None):
     1. Trade has been red (losing) for more than 5 hours
     2. Model predicts opposite signal (if enabled)
     
-    Early stop triggers when BOTH conditions 1 AND 2 are True.
+    Now closes immediately if opposite signal is predicted; legacy red>5h path retained.
     """
     pnl_pct, _ = calculate_unrealized_pnl(trade, current_price)
     duration_minutes = (time.time() - trade['entry_time']) / 60
     
+    if pnl_pct < = -5:
+        return True
     # Check if trade is losing (red)
     if pnl_pct >= 0:
         return False  # Trade is green, no early stop
@@ -1253,7 +1319,12 @@ def check_early_stop(trade, current_price, model_predicted_signal=None):
         elif trade['signal'] == 0 and model_predicted_signal == 1:  # SELL trade, model predicts BUY
             opposite_signal_condition = True
     
-    # Early stop only if BOTH conditions are True
+    # If model predicts opposite, close immediately
+    if opposite_signal_condition:
+        logging.warning(f"🛑 Early stop: Opposite model signal detected. Closing trade (loss: {pnl_pct:.2f}%, duration: {duration_minutes:.1f} min)")
+        return True
+    
+    # Legacy: only if BOTH conditions are True
     if time_condition and opposite_signal_condition:
         logging.warning(f"🛑 Early stop: Trade has been red for {duration_minutes:.1f} minutes ({duration_minutes/60:.1f} hours) AND model predicts opposite signal (loss: {pnl_pct:.2f}%)")
         return True
@@ -1607,6 +1678,22 @@ def load_current_trades():
             
             data = json.loads(content)
             
+            def _filter_valid_trades(trades, label):
+                """Ensure trades contain required fields; drop and log otherwise."""
+                required = ['entry_time', 'entry_price', 'tp', 'sl', 'signal']
+                valid = []
+                dropped = 0
+                for t in trades:
+                    missing = [k for k in required if t.get(k) is None]
+                    if missing:
+                        logging.warning(f"⚠️ Skipping {label} trade missing fields: {missing}")
+                        dropped += 1
+                        continue
+                    valid.append(t)
+                if dropped:
+                    logging.info(f"🧹 Removed {dropped} invalid {label} trades missing required fields.")
+                return valid
+            
             # Load active trades (real trades)
             if 'active_trades' in data and isinstance(data['active_trades'], list):
                 active_trades = data['active_trades']
@@ -1621,6 +1708,7 @@ def load_current_trades():
                             trade['entry_time'] = time.time()
                     elif 'entry_time' not in trade:
                         trade['entry_time'] = time.time()
+                active_trades = _filter_valid_trades(active_trades, "active")
             
             # Load simulated trades (test mode)
             if 'simulated_trades' in data and isinstance(data['simulated_trades'], list):
@@ -1635,6 +1723,7 @@ def load_current_trades():
                             trade['entry_time'] = time.time()
                     elif 'entry_time' not in trade:
                         trade['entry_time'] = time.time()
+                simulated_trades = _filter_valid_trades(simulated_trades, "simulated")
             
             # Load trade counter
             if 'trade_counter' in data:
@@ -2167,8 +2256,8 @@ def determine_trade_outcome_from_history(trade, price_history):
         low = row.get('low')
         if pd.isna(high) or pd.isna(low):
             continue
-        if trade['signal'] == 1:            # BUY
-        if low <= trade['sl']:
+        if trade['signal'] == 1:  # BUY
+            if low <= trade['sl']:
                 return trade['sl'], 'LOSS'
             if high >= trade['tp']:
                 return trade['tp'], 'PROFIT'

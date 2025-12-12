@@ -82,7 +82,7 @@ class CryptoPredicter(nn.Module):
     4. Better handling of temporal patterns through positional encoding
     """
     def __init__(self, input_size=93, d_model=128, nhead=8, num_layers=4, 
-                 dim_feedforward=512, dropout=0.2, max_seq_len=5000,
+                 dim_feedforward=512, dropout=0.25, max_seq_len=5000,
                  hidden_layer_size=None, use_dropout_inference=True, **kwargs):
         """
         Transformer-based crypto predictor initialization.
@@ -140,6 +140,9 @@ class CryptoPredicter(nn.Module):
         # Additional dropout for regularization
         self.dropout_layer = nn.Dropout(dropout)
         
+        # Store dropout rate for verification
+        self.dropout_rate = dropout
+        
         # Time decay factor for pooling attention (bias toward recent timesteps)
         self.time_decay_alpha = 3.0
         
@@ -192,6 +195,9 @@ class CryptoPredicter(nn.Module):
         
         # Weighted sum to get final representation
         pooled_output = torch.sum(transformer_out * attention_weights, dim=1)  # (batch, d_model)
+        
+        # Apply dropout before output heads for MC dropout variation
+        pooled_output = self.dropout_layer(pooled_output)
         
         # Generate predictions from pooled representation
         signal_logits = self.signal_head(pooled_output)
@@ -307,14 +313,19 @@ class CryptoPredicter(nn.Module):
         if self.use_dropout_inference and mc_samples > 1:
             # Monte Carlo Dropout: Keep dropout enabled during inference
             # to get uncertainty estimates
-            self.train()  # Enable dropout
+            self.train()  # Enable dropout - CRITICAL: this enables dropout layers
+            
+            # Verify dropout is enabled
+            if not self.training:
+                import warnings
+                warnings.warn("Model is not in training mode! MC dropout may not work correctly.")
             
             all_signal_probs = []
             all_tp_preds = []
             all_sl_preds = []
             
             with torch.no_grad():
-                for _ in range(mc_samples):
+                for i in range(mc_samples):
                     signal_probs, tp_pred, sl_pred = self(X_test)
                     all_signal_probs.append(signal_probs)
                     all_tp_preds.append(tp_pred)
@@ -325,10 +336,24 @@ class CryptoPredicter(nn.Module):
             mean_signal_probs = signal_probs_stacked.mean(dim=0)
             uncertainty = signal_probs_stacked.std(dim=0)  # Uncertainty estimate
             
+            # Diagnostic: Check if MC dropout is creating variation
+            max_probs_per_sample = signal_probs_stacked.max(dim=-1)[0]  # Max prob for each sample
+            prob_variance = max_probs_per_sample.var().item()
+            
+            # Log warning if variance is too low (MC dropout not working)
+            if prob_variance < 1e-6:
+                import warnings
+                warnings.warn(f"MC Dropout Warning: Very low variance ({prob_variance:.2e}) across {mc_samples} samples. "
+                            f"Dropout may not be active. Check model.training={self.training}, "
+                            f"use_dropout_inference={self.use_dropout_inference}")
+            
             mean_tp_pred = torch.stack(all_tp_preds).mean(dim=0)
             mean_sl_pred = torch.stack(all_sl_preds).mean(dim=0)
             
             predictions = torch.argmax(mean_signal_probs, dim=1)
+            
+            # Reset to eval mode after MC sampling
+            self.eval()
             
             return predictions, mean_signal_probs, mean_tp_pred, mean_sl_pred, uncertainty
         else:

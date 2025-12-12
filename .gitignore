@@ -36,3 +36,4 @@ test_*.py
 # Documentation (keep README.md)
 *.md
 !README.md
+.DS_Store
