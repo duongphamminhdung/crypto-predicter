@@ -163,24 +163,53 @@ def main():
     print(f"Total data available: {len(df)} rows")
     print(f"Date range: {df.index[0]} to {df.index[-1]}")
 
-    # Generate labels
-    print("Generating trading labels (buy/sell signals)...")
-    labeled_df = processor._generate_labels(df.copy())
-    
-    # Save the labeled data (only for full training, not fine-tuning)
-    if not is_fine_tuning:
-        labeled_df.to_csv('training_data.csv')
-        print(f"✅ Training data saved to training_data.csv ({len(labeled_df)} rows)")
-    else:
-        print(f"✅ Generated labels for {len(labeled_df)} rows (fine-tuning mode - not overwriting main training data)")
-
-    # Process data for training (this also calculates technical indicators)
+    # Process data for training (this also generates labels and calculates technical indicators)
     print("\nProcessing data for training...")
     try:
-        X_train, y_train_signal, y_train_tp, y_train_sl, X_test, y_test_signal, y_test_tp, y_test_sl = processor.get_train_test_data(labeled_df)
+        X_train, y_train_signal, y_train_tp, y_train_sl, X_test, y_test_signal, y_test_tp, y_test_sl = processor.get_train_test_data(df.copy())
+    except ValueError as e:
+        # Handle insufficient data errors gracefully
+        error_str = str(e)
+        if "Not enough data" in error_str or "Could not find any training signals" in error_str or "No feature columns available" in error_str:
+            print(f"❌ Data processing failed: {e}")
+            if is_fine_tuning:
+                print("\n" + "="*60)
+                print("⚠️  FINE-TUNING ABORTED")
+                print("="*60)
+                print("Reason: Insufficient signals in recent data")
+                print("This can happen when:")
+                print("  • Recent market was not volatile enough")
+                print("  • Time period too short (need more historical data)")
+                print("  • Signal generation parameters too strict")
+                print("\nThe bot will continue using the current model.")
+                print("="*60)
+                # Exit cleanly with error code 0 to indicate this is expected behavior
+                sys.exit(0)
+            else:
+                print("\n" + "="*60)
+                print("⚠️  INITIAL TRAINING FAILED")
+                print("="*60)
+                print("Possible solutions:")
+                print("  1. Delete training_data.csv and fetch fresh data")
+                print("  2. Adjust tp_sl_ratio to be more lenient (lower value)")
+                print("  3. Increase future_horizon to capture longer-term movements")
+                print("="*60)
+                raise
+        else:
+            print(f"❌ Data processing failed: {e}")
+            raise
     except Exception as e:
         print(f"❌ Data processing failed: {e}")
+        import traceback
+        traceback.print_exc()
         raise
+    
+    # Save the labeled data (only for full training, not fine-tuning)
+    # Note: We can't save labeled_df anymore since labeling happens inside get_train_test_data
+    if not is_fine_tuning:
+        # For full training, save the raw data - labels will be regenerated on next load
+        df.to_csv('training_data.csv')
+        print(f"✅ Training data saved to training_data.csv ({len(df)} rows)")
     print("✅ Data processing complete.")
     if processor.input_size:
         print(f"   • Features used  : {processor.input_size}")

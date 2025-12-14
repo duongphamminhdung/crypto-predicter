@@ -1,0 +1,41 @@
+{
+  "active_trades": [],
+  "simulated_trades": [
+    {
+      "signal": 1,
+      "entry_price": 89762.1,
+      "tp": 101312.171875,
+      "sl": 71809.68000000001,
+      "side": "BUY",
+      "entry_time": "2025-12-14 18:01:58",
+      "quantity": 0.002898302267643633,
+      "trade_amount_usdt": 43.35961632974243,
+      "margin_usdt": 43.35961632974243,
+      "notional_usdt": 260.15769797845456,
+      "leverage": 6,
+      "expected_profit_usdt": 33.47559950675943,
+      "expected_loss_usdt": 52.03153959569091,
+      "confidence": 0.8906410886494953,
+      "index": 1
+    },
+    {
+      "signal": 1,
+      "entry_price": 89625.2,
+      "tp": 100680.6640625,
+      "sl": 71700.16,
+      "side": "BUY",
+      "entry_time": "2025-12-14 18:05:05",
+      "quantity": 0.00531852501223188,
+      "trade_amount_usdt": 59.58423349078558,
+      "margin_usdt": 59.58423349078558,
+      "notional_usdt": 476.67386792628463,
+      "leverage": 8,
+      "expected_profit_usdt": 58.79876213823694,
+      "expected_loss_usdt": 95.3347735852569,
+      "confidence": 0.9792116745392792,
+      "index": 2
+    }
+  ],
+  "trade_counter": 2,
+  "last_updated": "2025-12-14 18:05:05"
+}

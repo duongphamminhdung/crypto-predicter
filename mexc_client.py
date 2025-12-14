@@ -1,6 +1,7 @@
 import requests
 import pandas as pd
 import time
+import logging
 
 class MEXCClient:
     """
@@ -53,9 +54,9 @@ class MEXCClient:
             print(f"Error getting contract detail: {e}")
             return None
     
-    def get_kline_data(self, symbol='BTC_USDT', interval='Min1', start=None, end=None):
+    def get_kline_data(self, symbol='BTC_USDT', interval='Min1', start=None, end=None, max_retries=3):
         """
-        Get K-line data for futures contract
+        Get K-line data for futures contract with automatic retry on network errors
         Endpoint: GET /api/v1/contract/kline/{symbol}
         
         According to MEXC Futures API docs:
@@ -68,6 +69,7 @@ class MEXCClient:
         :param interval: Min1, Min5, Min15, Min30, Min60, Hour4, Hour8, Day1, Week1, Month1
         :param start: Start timestamp in seconds (optional)
         :param end: End timestamp in seconds (optional)
+        :param max_retries: Maximum number of retry attempts on network errors (default: 3)
         :return: DataFrame with k-line data
         """
         endpoint = f"/api/v1/contract/kline/{symbol}"
@@ -81,77 +83,108 @@ class MEXCClient:
         if end:
             params['end'] = end
         
-        try:
-            response = requests.get(self.base_url + endpoint, params=params, timeout=30)
-            response.raise_for_status()
-            result = response.json()
-            
-            # Check if request was successful
-            if not result.get('success'):
-                print(f"❌ API Error: {result.get('message', 'Unknown error')}")
-                return None
-            
-            data = result.get('data', {})
-            
-            # Futures API returns data in this structure:
-            # {
-            #   "time": [timestamp1, timestamp2, ...],
-            #   "open": [price1, price2, ...],
-            #   "high": [price1, price2, ...],
-            #   "low": [price1, price2, ...],
-            #   "close": [price1, price2, ...],
-            #   "vol": [volume1, volume2, ...],
-            #   "amount": [amount1, amount2, ...]
-            # }
-            
-            if not data or 'time' not in data:
-                print("Warning: API returned no kline data")
-                return None
-            
-            # Convert to DataFrame
-            df = pd.DataFrame({
-                'open_time': data.get('time', []),
-                'open': data.get('open', []),
-                'high': data.get('high', []),
-                'low': data.get('low', []),
-                'close': data.get('close', []),
-                'volume': data.get('vol', []),
-                'amount': data.get('amount', [])
-            })
-            
-            if df.empty:
-                print("Warning: Created empty DataFrame from API data")
-                return None
-            
-            # Convert timestamp to datetime (MEXC futures uses seconds, not milliseconds)
-            df['open_time'] = pd.to_datetime(df['open_time'], unit='s')
-            df['close_time'] = df['open_time']  # Set close_time same as open_time
-            
-            # Ensure numeric columns
-            numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'amount']
-            for col in numeric_cols:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            # Sort by time (oldest to newest)
-            df = df.sort_values('open_time').reset_index(drop=True)
-            
-            print(f"✅ Fetched {len(df)} kline records for {symbol} ({interval})")
-            return df
-            
-        except requests.exceptions.HTTPError as e:
-            print(f"❌ HTTP Error fetching kline data: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                print(f"   URL: {e.response.url}")
-                print(f"   Response: {e.response.text[:200]}")
-            return None
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Network error fetching kline data: {e}")
-            return None
-        except Exception as e:
-            print(f"❌ Unexpected error in get_kline_data: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
+        last_exception = None
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(self.base_url + endpoint, params=params, timeout=30)
+                response.raise_for_status()
+                result = response.json()
+                
+                # Check if request was successful
+                if not result.get('success'):
+                    print(f"❌ API Error: {result.get('message', 'Unknown error')}")
+                    return None
+                
+                data = result.get('data', {})
+                
+                # Futures API returns data in this structure:
+                # {
+                #   "time": [timestamp1, timestamp2, ...],
+                #   "open": [price1, price2, ...],
+                #   "high": [price1, price2, ...],
+                #   "low": [price1, price2, ...],
+                #   "close": [price1, price2, ...],
+                #   "vol": [volume1, volume2, ...],
+                #   "amount": [amount1, amount2, ...]
+                # }
+                
+                if not data or 'time' not in data:
+                    print("Warning: API returned no kline data")
+                    return None
+                
+                # Convert to DataFrame
+                df = pd.DataFrame({
+                    'open_time': data.get('time', []),
+                    'open': data.get('open', []),
+                    'high': data.get('high', []),
+                    'low': data.get('low', []),
+                    'close': data.get('close', []),
+                    'volume': data.get('vol', []),
+                    'amount': data.get('amount', [])
+                })
+                
+                if df.empty:
+                    print("Warning: Created empty DataFrame from API data")
+                    return None
+                
+                # Convert timestamp to datetime (MEXC futures uses seconds, not milliseconds)
+                df['open_time'] = pd.to_datetime(df['open_time'], unit='s')
+                df['close_time'] = df['open_time']  # Set close_time same as open_time
+                
+                # Ensure numeric columns
+                numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'amount']
+                for col in numeric_cols:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+                # Sort by time (oldest to newest)
+                df = df.sort_values('open_time').reset_index(drop=True)
+                
+                print(f"✅ Fetched {len(df)} kline records for {symbol} ({interval})")
+                return df
+                
+            except requests.exceptions.HTTPError as e:
+                last_exception = e
+                print(f"❌ HTTP Error fetching kline data (attempt {attempt + 1}/{max_retries}): {e}")
+                if hasattr(e, 'response') and e.response is not None:
+                    print(f"   URL: {e.response.url}")
+                    print(f"   Response: {e.response.text[:200]}")
+                
+                # Don't retry on 4xx errors (client errors)
+                if hasattr(e, 'response') and e.response is not None and 400 <= e.response.status_code < 500:
+                    print(f"   Client error {e.response.status_code} - not retrying")
+                    return None
+                
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2  # Exponential backoff: 2s, 4s, 6s
+                    print(f"   Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                    
+            except requests.exceptions.RequestException as e:
+                last_exception = e
+                print(f"❌ Network error fetching kline data (attempt {attempt + 1}/{max_retries}): {e}")
+                
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2  # Exponential backoff: 2s, 4s, 6s
+                    print(f"   Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                    
+            except Exception as e:
+                last_exception = e
+                print(f"❌ Unexpected error in get_kline_data (attempt {attempt + 1}/{max_retries}): {e}")
+                import traceback
+                traceback.print_exc()
+                
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2
+                    print(f"   Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+        
+        # All retries exhausted
+        print(f"❌ Failed to fetch kline data after {max_retries} attempts")
+        if last_exception:
+            print(f"   Last error: {last_exception}")
+        return None
 
 if __name__ == '__main__':
     client = MEXCClient()

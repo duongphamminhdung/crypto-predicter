@@ -92,6 +92,7 @@ MAX_LEVERAGE                = 75    # Exchange leverage cap
                                     # Early stop parameters
 EARLY_STOP_MAX_TIME_MINUTES = 300   # Close trade if it's been red for this long (minutes) - 5 hours
 EARLY_STOP_OPPOSITE_SIGNAL  = True  # Close losing trades if model predicts opposite signal
+EARLY_STOP_LOSS_THRESHOLD   = 200.0 # Close trade when loss reaches $200 USD
                                     # Early stop triggers when BOTH conditions are met: time limit AND opposite signal
                                     # Model refinement parameters
 REFINEMENT_INTERVAL_SECONDS = 3600  # Trigger model refinement every 1 hour (3600 seconds)
@@ -146,6 +147,10 @@ def main():
     
     # Track model refinement timing
     last_refinement_time = None  # Will be set on first refinement
+    
+    # Track consecutive confidence=1.0 predictions for refinement trigger
+    consecutive_confidence_1_count = 0
+    last_skip_time = None  # Track when we last skipped due to 4 consecutive conf=1.0
 
     # Initialize daily trading stats from trades_log.json
     daily_stats = initialize_stats_from_trades_log()  # This already saves all stats
@@ -245,14 +250,19 @@ def main():
             if should_refine and not testing_model:
                 logging.info("🔄 Triggering scheduled model refinement with recent data...")
                 # Note: retrain_with_recent_data will need to be updated to match new training params if they changed significantly
-                retrain_with_recent_data(client)
-                # Start testing the new model
-                testing_model = True
-                testing_start_time = time.time()
-                last_refinement_time = current_time  # Update last refinement time
-                current_model_predictions = []
-                test_model_predictions = []
-                logging.info(f"🧪 Starting 3-minute testing phase - comparing models...")
+                try:
+                    retrain_with_recent_data(client)
+                    # Start testing the new model only if refinement succeeded
+                    testing_model = True
+                    testing_start_time = time.time()
+                    last_refinement_time = current_time  # Update last refinement time
+                    current_model_predictions = []
+                    test_model_predictions = []
+                    logging.info(f"🧪 Starting 3-minute testing phase - comparing models...")
+                except Exception as e:
+                    logging.error(f"❌ Refinement failed due to error: {e}")
+                    logging.info("⚠️ Continuing with current model without refinement")
+                    last_refinement_time = current_time  # Still update to avoid immediate retry
             elif should_refine and testing_model:
                 # Still in testing phase, reschedule for after testing completes
                 logging.info(f"⏸️  Refinement scheduled but currently testing model. Will refine after testing completes.")
@@ -281,14 +291,18 @@ def main():
                     # Trigger retraining on first loss (don't retrain for every loss)
                     if not testing_model:
                         logging.info(f"\n⚠️ Trade resulted in a LOSS. Triggering model retraining with recent 1 hour data.")
-                        retrain_with_recent_data(client)
-                        # Start testing the new model
-                        testing_model = True
-                        testing_start_time = time.time()
-                        last_refinement_time = time.time()  # Update last refinement time
-                        current_model_predictions = []
-                        test_model_predictions = []
-                        logging.info(f"🧪 Starting 3-minute testing phase - comparing models...")
+                        try:
+                            retrain_with_recent_data(client)
+                            # Start testing the new model only if refinement succeeded
+                            testing_model = True
+                            testing_start_time = time.time()
+                            last_refinement_time = time.time()  # Update last refinement time
+                            current_model_predictions = []
+                            test_model_predictions = []
+                            logging.info(f"🧪 Starting 3-minute testing phase - comparing models...")
+                        except Exception as e:
+                            logging.error(f"❌ Refinement failed due to error: {e}")
+                            logging.info("⚠️ Continuing with current model without refinement")
                 elif trade_profit:
                     # Use stored trade index if available, otherwise assign new one
                     trade_index = trade.get('index', None)
@@ -394,6 +408,61 @@ def main():
             
             # Use effective confidence for trading decisions
             confidence = effective_confidence
+            
+            # Track consecutive confidence=1.0 predictions
+            if confidence >= 0.9999:  # Consider 0.9999+ as confidence=1.0
+                consecutive_confidence_1_count += 1
+                logging.info(f"📊 Consecutive confidence=1.0 count: {consecutive_confidence_1_count}/4")
+            else:
+                # Reset counter if confidence drops below 1.0
+                if consecutive_confidence_1_count > 0:
+                    logging.info(f"🔄 Resetting consecutive confidence=1.0 counter (was {consecutive_confidence_1_count})")
+                consecutive_confidence_1_count = 0
+            
+            # Check if we should trigger refinement due to 4 consecutive confidence=1.0
+            if consecutive_confidence_1_count >= 4:
+                # Check if enough time has passed since last skip (3 minutes)
+                current_time = time.time()
+                should_trigger_refinement = False
+                
+                if last_skip_time is None:
+                    # First time hitting 4 consecutive - trigger refinement
+                    should_trigger_refinement = True
+                    logging.info("⚡ First time reaching 4 consecutive confidence=1.0 predictions")
+                else:
+                    time_since_skip = current_time - last_skip_time
+                    if time_since_skip >= 180:  # 3 minutes = 180 seconds
+                        should_trigger_refinement = True
+                        logging.info(f"⚡ 3 minutes passed since last skip ({time_since_skip:.0f}s) - can trigger refinement again")
+                    else:
+                        remaining_time = 180 - time_since_skip
+                        logging.info(f"⏸️  Skipping refinement - only {time_since_skip:.0f}s passed since last skip "
+                                   f"(need 180s, {remaining_time:.0f}s remaining)")
+                
+                if should_trigger_refinement and not testing_model:
+                    logging.info("🔄 Triggering model refinement due to 4 consecutive confidence=1.0 predictions")
+                    try:
+                        retrain_with_recent_data(client)
+                        # Start testing the new model only if refinement succeeded
+                        testing_model = True
+                        testing_start_time = time.time()
+                        last_refinement_time = time.time()
+                        last_skip_time = time.time()  # Update skip time
+                        consecutive_confidence_1_count = 0  # Reset counter
+                        current_model_predictions = []
+                        test_model_predictions = []
+                        logging.info(f"🧪 Starting 3-minute testing phase - comparing models...")
+                        logging.info(f"⏭️  Skipping trading for the next 3 minutes...")
+                    except Exception as e:
+                        logging.error(f"❌ Refinement failed due to error: {e}")
+                        logging.info("⚠️ Continuing with current model without refinement")
+                        # Still update skip time to avoid immediate retry
+                        last_skip_time = time.time()
+                        consecutive_confidence_1_count = 0  # Reset counter
+                elif should_trigger_refinement and testing_model:
+                    logging.info(f"⏸️  Refinement trigger detected but already testing model. Will skip after testing completes.")
+                    last_skip_time = time.time()  # Update skip time even if not triggering
+                    consecutive_confidence_1_count = 0  # Reset counter
             
                                                        # Use close_scaler for inverse transform of TP/SL (calculate early for early stop check)
             signal_mismatch        = False             # Default to no mismatch
@@ -675,8 +744,20 @@ def main():
                     'timestamp'  : time.time()
                 })
 
+            # Check if we're in the 3-minute skip period after refinement trigger
+            skip_trading_due_to_refinement = False
+            if last_skip_time is not None:
+                time_since_skip = time.time() - last_skip_time
+                if time_since_skip < 180:  # Within 3 minutes of skip
+                    skip_trading_due_to_refinement = True
+                    remaining_time = 180 - time_since_skip
+                    logging.info(f"⏭️  Skipping trading due to recent refinement trigger "
+                               f"({time_since_skip:.0f}s elapsed, {remaining_time:.0f}s remaining)")
+            
             # Trading and Learning Logic - STRICT THRESHOLDS FOR FUTURES
-            if testing_model:
+            if skip_trading_due_to_refinement:
+                logging.info("⏸️  In 3-minute skip period - no trading this cycle")
+            elif testing_model:
                 logging.info("\n🧪 Testing mode: Both models running in parallel. Using current model for trading.")
                 # Still execute trades with current model during testing if VERY high confidence
                 if confidence >= CONFIDENCE_THRESHOLD_TRADE:
@@ -748,7 +829,7 @@ def main():
                         save_current_trades(active_trades, simulated_trades, trade_counter)
                 else:
                     logging.info(f"⏸️  Confidence {confidence:.2f} below trading threshold ({CONFIDENCE_THRESHOLD_TRADE}). Waiting for better signal.")
-            elif confidence >= CONFIDENCE_THRESHOLD_TRADE:
+            elif not skip_trading_due_to_refinement and confidence >= CONFIDENCE_THRESHOLD_TRADE:
                 # ONLY trade with high confidence (>70%) for futures
                 # Check if we should skip this trade: only open new trade if entry is better OR confidence is higher (>=0.9)
                 should_skip = False
@@ -816,19 +897,23 @@ def main():
                         active_trades.append(new_trade)
                     # Save current trades after opening new trade
                     save_current_trades(active_trades, simulated_trades, trade_counter)
-            elif confidence < CONFIDENCE_THRESHOLD_TEST:
+            elif not skip_trading_due_to_refinement and confidence < CONFIDENCE_THRESHOLD_TEST:
                 # Trigger model testing and fine-tuning when confidence is below threshold
                 logging.info(f"\n⚠️ Confidence {confidence:.2f} below threshold ({CONFIDENCE_THRESHOLD_TEST})")
                 logging.info("Triggering model fine-tuning with recent data...")
                 if not testing_model:  # Don't start new test if already testing
-                    retrain_with_recent_data(client)
-                    # Start testing the new model
-                    testing_model = True
-                    testing_start_time = time.time()
-                    last_refinement_time = time.time()  # Update last refinement time
-                    current_model_predictions = []
-                    test_model_predictions = []
-                    logging.info(f"🧪 Starting 3-minute testing phase - comparing models...")
+                    try:
+                        retrain_with_recent_data(client)
+                        # Start testing the new model only if refinement succeeded
+                        testing_model = True
+                        testing_start_time = time.time()
+                        last_refinement_time = time.time()  # Update last refinement time
+                        current_model_predictions = []
+                        test_model_predictions = []
+                        logging.info(f"🧪 Starting 3-minute testing phase - comparing models...")
+                    except Exception as e:
+                        logging.error(f"❌ Refinement failed due to error: {e}")
+                        logging.info("⚠️ Continuing with current model without refinement")
             else:
                 # Confidence between thresholds - wait for better signal
                 logging.info(f"⏸️  Confidence {confidence:.2f} is moderate. Waiting for higher confidence (>{CONFIDENCE_THRESHOLD_TRADE:.0%}) to trade.")
@@ -849,36 +934,39 @@ def main():
             time.sleep(60)
 
 def determine_leverage(confidence):
+    """
+    Determine leverage based on confidence - CONSERVATIVE approach
+    Lower leverage = smaller losses from price movements
+    """
     if confidence >= 0.98:
-        return min(75, MAX_LEVERAGE)
+        return min(10, MAX_LEVERAGE)  # Max 10x even for perfect confidence
     elif confidence >= 0.90:
-        return min(60, MAX_LEVERAGE)
+        return min(8, MAX_LEVERAGE)   # 8x for very high confidence
     elif confidence >= 0.85:
-        return min(40, MAX_LEVERAGE)
+        return min(6, MAX_LEVERAGE)   # 6x
     elif confidence >= 0.80:
-        return min(30, MAX_LEVERAGE)
+        return min(5, MAX_LEVERAGE)   # 5x
     elif confidence >= 0.75:
-        return min(20, MAX_LEVERAGE)
+        return min(4, MAX_LEVERAGE)   # 4x
     else:
-        return min(10, MAX_LEVERAGE)
+        return min(3, MAX_LEVERAGE)   # Min 3x leverage
 
 def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal_aligned=True):
     """
     Calculate recommended trade amount (margin) based on confidence level and signal alignment.
-    Higher confidence with aligned signals (model signal matches TP-based signal) = larger position size.
+    CONSERVATIVE position sizing to protect capital in leveraged trading.
     
-    Base position sizing by confidence:
-    - 1.0: 75% of balance
-    - 0.95-0.999: 70% of balance
-    - 0.90-0.95: 65% of balance
-    - 0.85-0.90: 55% of balance
-    - 0.80-0.85: 45% of balance
-    - 0.75-0.80: 35% of balance
-    - 0.70-0.75: 25% of balance
+    Base position sizing by confidence (% of balance as margin):
+    - 1.0: 5% of balance
+    - 0.95-0.999: 4% of balance
+    - 0.90-0.95: 3.5% of balance
+    - 0.85-0.90: 3% of balance
+    - 0.80-0.85: 2.5% of balance
+    - 0.75-0.80: 2% of balance
+    - 0.70-0.75: 1.5% of balance
     
     When signals are aligned (model signal matches TP-based signal):
-    - Position size is increased by up to 25% based on confidence
-    - Higher confidence = larger multiplier
+    - Position size is increased by up to 50% based on confidence
     
     When signals are mismatched:
     - Position size is reduced by 50%
@@ -890,38 +978,37 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal
         stop_loss: Stop loss price (for reference, not used in calculation)
         signal_aligned: True if model signal matches TP-based signal, False otherwise
     
-    Returns: 
+    Returns:
         trade_percentage   : Percentage of balance to allocate as margin
         margin_usdt        : Margin placed on the trade
         trade_quantity_btc : BTC quantity controlled after applying leverage
         notional_usdt      : Effective notional size (margin * leverage)
         leverage_used      : Leverage multiplier applied to this trade
     """
-    # Base confidence-based position sizing (% of balance to trade)
+    # CONSERVATIVE base position sizing (% of balance as margin)
     if confidence >= 1.0:
-        base_percentage = 75.0  # 75% of balance for perfect confidence (1.0)
+        base_percentage = 5.0   # Max 5% of balance for perfect confidence
     elif confidence >= 0.95:
-        base_percentage = 70.0  # 70% of balance for very high confidence (0.95-0.999)
+        base_percentage = 4.0   # 4% for very high confidence
     elif confidence >= 0.90:
-        base_percentage = 65.0  # 65% of balance
+        base_percentage = 3.5   # 3.5% of balance
     elif confidence >= 0.85:
-        base_percentage = 55.0  # 55% of balance (0.85-0.90)
+        base_percentage = 3.0   # 3% of balance
     elif confidence >= 0.80:
-        base_percentage = 45.0  # 45% of balance
+        base_percentage = 2.5   # 2.5% of balance
     elif confidence >= 0.75:
-        base_percentage = 35.0  # 35% of balance
+        base_percentage = 2.0   # 2% of balance
     else:  # 0.70 - 0.75
-        base_percentage = 25.0  # 25% of balance for minimum confidence threshold
+        base_percentage = 1.5   # Min 1.5% of balance
     
     # Adjust position size based on signal alignment
     if signal_aligned:
-        # Signals match - increase position size based on confidence
-        # Higher confidence = larger increase (up to 25% additional)
-        alignment_multiplier = 1.0 + (confidence * 0.25)  # 1.0 to 1.25 multiplier
+        # Signals match - increase position size by up to 50%
+        alignment_multiplier = 1.0 + (confidence * 0.5)  # 1.0 to 1.5 multiplier
         trade_percentage = base_percentage * alignment_multiplier
-        # Cap at 95% of balance for safety
-        if trade_percentage > 95.0:
-            trade_percentage = 95.0
+        # Cap at 7.5% of balance for safety (5% * 1.5)
+        if trade_percentage > 7.5:
+            trade_percentage = 7.5
     else:
         # Signals mismatch - reduce position size by 50%
         trade_percentage = base_percentage * 0.5
@@ -935,8 +1022,16 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal
         margin_usdt = min_trade_amount
         trade_percentage = (margin_usdt / balance * 100) if balance > 0 else 0
     
+    # Use CONSERVATIVE leverage (much lower than before)
     leverage_used = determine_leverage(confidence)
     notional_usdt = margin_usdt * leverage_used
+    
+    # Additional safety check: Cap notional at 50% of balance to prevent excessive exposure
+    max_notional = balance * 0.5  # Max 50% of balance as notional exposure
+    if notional_usdt > max_notional:
+        notional_usdt = max_notional
+        leverage_used = notional_usdt / margin_usdt if margin_usdt > 0 else 1
+        logging.warning(f"⚠️ Capping position: Reduced notional from ${margin_usdt * determine_leverage(confidence):.2f} to ${notional_usdt:.2f} (leverage adjusted to {leverage_used:.1f}x)")
     
     # Calculate quantity in BTC
     trade_quantity_btc = notional_usdt / current_price
@@ -1260,13 +1355,22 @@ def execute_trade(signal, exchange, quantity, entry_price, tp, sl, margin_usdt, 
     return trade_info
 
 def calculate_unrealized_pnl(trade, current_price):
-    """Calculate unrealized P&L percentage and dollar amount for an active trade"""
+    """Calculate unrealized P&L percentage and dollar amount for an active trade
+    
+    For leveraged futures trading:
+    - quantity stored is the full leveraged position (notional_usdt / entry_price)
+    - PnL in USD = quantity * price_change
+    - PnL % = (PnL in USD / margin) * 100
+    """
     if trade['signal'] == 1:  # BUY trade
-        pnl_pct = ((current_price - trade['entry_price']) / trade['entry_price']) * 100
         pnl_usdt = trade['quantity'] * (current_price - trade['entry_price'])
     else:  # SELL trade
-        pnl_pct  = ((trade['entry_price'] - current_price) / trade['entry_price']) * 100
         pnl_usdt = trade['quantity'] * (trade['entry_price'] - current_price)
+    
+    # Calculate PnL percentage relative to margin invested (not price change %)
+    margin_used = trade.get('margin_usdt', trade.get('trade_amount_usdt', 1))
+    pnl_pct = (pnl_usdt / margin_used) * 100 if margin_used > 0 else 0
+    
     return pnl_pct, pnl_usdt
 
 def check_trade_loss(trade, current_price):
@@ -1293,16 +1397,20 @@ def is_trade_complete(trade, current_price):
 def check_early_stop(trade, current_price, model_predicted_signal=None):
     """
     Check if trade should be early stopped based on:
-    1. Trade has been red (losing) for more than 5 hours
-    2. Model predicts opposite signal (if enabled)
+    1. Loss reaches $200 USD in PnL
+    2. Trade has been red (losing) for more than 5 hours
+    3. Model predicts opposite signal (if enabled)
     
-    Now closes immediately if opposite signal is predicted; legacy red>5h path retained.
+    Now closes immediately if opposite signal is predicted OR loss >= $200 USD.
     """
-    pnl_pct, _ = calculate_unrealized_pnl(trade, current_price)
+    pnl_pct, pnl_usdt = calculate_unrealized_pnl(trade, current_price)
     duration_minutes = (time.time() - trade['entry_time']) / 60
     
-    if pnl_pct < = -5:
+    # Check if loss reaches $200 threshold - IMMEDIATE CLOSE
+    if pnl_usdt <= -EARLY_STOP_LOSS_THRESHOLD:
+        logging.warning(f"🛑 Early stop: Loss threshold reached (${pnl_usdt:.2f} <= -${EARLY_STOP_LOSS_THRESHOLD:.2f})")
         return True
+    
     # Check if trade is losing (red)
     if pnl_pct >= 0:
         return False  # Trade is green, no early stop
@@ -1321,12 +1429,12 @@ def check_early_stop(trade, current_price, model_predicted_signal=None):
     
     # If model predicts opposite, close immediately
     if opposite_signal_condition:
-        logging.warning(f"🛑 Early stop: Opposite model signal detected. Closing trade (loss: {pnl_pct:.2f}%, duration: {duration_minutes:.1f} min)")
+        logging.warning(f"🛑 Early stop: Opposite model signal detected. Closing trade (loss: {pnl_pct:.2f}%, ${pnl_usdt:.2f}, duration: {duration_minutes:.1f} min)")
         return True
     
     # Legacy: only if BOTH conditions are True
     if time_condition and opposite_signal_condition:
-        logging.warning(f"🛑 Early stop: Trade has been red for {duration_minutes:.1f} minutes ({duration_minutes/60:.1f} hours) AND model predicts opposite signal (loss: {pnl_pct:.2f}%)")
+        logging.warning(f"🛑 Early stop: Trade has been red for {duration_minutes:.1f} minutes ({duration_minutes/60:.1f} hours) AND model predicts opposite signal (loss: {pnl_pct:.2f}%, ${pnl_usdt:.2f})")
         return True
     
     return False
@@ -1601,22 +1709,24 @@ def append_data_to_training_file(df):
     except Exception as e:
         logging.error(f"Error appending data to training_data.csv: {e}", exc_info=True)
 
-def retrain_with_recent_data(client): 
+def retrain_with_recent_data(client):
     """Fine-tune the model with the latest portion of historical training data"""
     logging.info("Loading latest historical data for fine-tuning...")
     
     # Load the existing training dataset
     if not os.path.exists('training_data.csv'):
-        logging.error("No training_data.csv found. Cannot fine-tune. Run train.py first.")
-        return
+        error_msg = "No training_data.csv found. Cannot fine-tune. Run train.py first."
+        logging.error(error_msg)
+        raise FileNotFoundError(error_msg)
     
     try:
         # Load the full training dataset
         full_df = pd.read_csv('training_data.csv', index_col=0, parse_dates=True)
         
         if full_df.empty or len(full_df) < 100:
-            logging.error(f"Training data is too small ({len(full_df)} rows). Cannot fine-tune.")
-            return
+            error_msg = f"Training data is too small ({len(full_df)} rows). Cannot fine-tune."
+            logging.error(error_msg)
+            raise ValueError(error_msg)
         
         # Use the latest portion of data for fine-tuning (ensure enough samples for sequences)
         rows_target = max(FINE_TUNE_RECENT_ROWS, FINE_TUNE_LOOKBACK * 50)
@@ -1626,29 +1736,81 @@ def retrain_with_recent_data(client):
         logging.info(f"Using latest {len(recent_df)} rows from training dataset (out of {len(full_df)} total) for fine-tuning")
         
         # Save as temporary training data for fine-tuning
-        recent_df.to_csv('recent_training_data.csv')
+        try:
+            recent_df.to_csv('recent_training_data.csv')
+            logging.info("✅ Created recent_training_data.csv for fine-tuning")
+        except Exception as e:
+            error_msg = f"Failed to save recent_training_data.csv: {e}"
+            logging.error(error_msg)
+            raise IOError(error_msg) from e
         
     except Exception as e:
-        logging.error(f"Failed to load training data for fine-tuning: {e}")
-        return
+        error_msg = f"Failed to load training data for fine-tuning: {e}"
+        logging.error(error_msg)
+        raise RuntimeError(error_msg) from e
     
     logging.info("Starting model fine-tuning with recent data (time-weighted)...")
     # Run training script with test mode flag using the conda environment
     # The presence of 'recent_training_data.csv' automatically triggers fine-tuning mode
-    result             = subprocess.run(['python', 'train.py', '--test-mode'], capture_output=True, text=True)
-    # python_path        = '/usr/local/anaconda3/envs/crypto/bin/python'
-    # result             = subprocess.run([python_path, 'train.py', '--test-mode'], capture_output=True, text=True)
-    if result.returncode == 0:
+    try:
+        result = subprocess.run(
+            ['python', 'train.py', '--test-mode'],
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minute timeout
+            check=False
+        )
+        
+        if result.returncode != 0:
+            # Check if this is an expected failure (exit code 0 means graceful abort due to insufficient signals)
+            if "FINE-TUNING ABORTED" in result.stdout:
+                logging.warning("⚠️ Fine-tuning aborted: Insufficient signals in recent data")
+                logging.info("   This is expected when recent market was not volatile enough")
+                logging.info("   Continuing with current model")
+                # Don't raise exception - this is expected behavior
+                # Still update last refinement time to avoid immediate retry
+                raise ValueError("Insufficient signals for fine-tuning")
+            else:
+                error_msg = f"Fine-tuning failed with return code {result.returncode}. stderr: {result.stderr[:500]}"
+                logging.error(error_msg)
+                raise RuntimeError(error_msg)
+        
         logging.info("Fine-tuning complete successfully.")
         test_model_path = os.path.join(MODEL_DIR, 'btc_predicter_model_test.pth')
+        
+        # Verify the test model was actually created
+        if not os.path.exists(test_model_path):
+            error_msg = f"Fine-tuning reported success but test model not found at {test_model_path}"
+            logging.error(error_msg)
+            raise FileNotFoundError(error_msg)
+        
         logging.info(f"New model saved as {test_model_path}")
-    else:
-        logging.warning(f"Fine-tuning encountered issues: {result.stderr[:500]}")
-        logging.info("Continuing with current model without fine-tuning.")
-        # Don't fail completely, just continue
-        return
-    
-    logging.info("Fine-tuned model will enter testing phase.")
+        logging.info("Fine-tuned model will enter testing phase.")
+        
+    except subprocess.TimeoutExpired:
+        error_msg = "Fine-tuning process timed out after 5 minutes"
+        logging.error(error_msg)
+        # Clean up temporary file
+        if os.path.exists('recent_training_data.csv'):
+            os.remove('recent_training_data.csv')
+            logging.info("🧹 Cleaned up recent_training_data.csv")
+        raise TimeoutError(error_msg)
+    except Exception as e:
+        error_msg = f"Fine-tuning subprocess failed: {e}"
+        logging.error(error_msg)
+        # Clean up temporary file
+        if os.path.exists('recent_training_data.csv'):
+            os.remove('recent_training_data.csv')
+            logging.info("🧹 Cleaned up recent_training_data.csv")
+        raise RuntimeError(error_msg) from e
+    finally:
+        # Always clean up the temporary training data file after refinement attempt
+        if os.path.exists('recent_training_data.csv'):
+            try:
+                os.remove('recent_training_data.csv')
+                logging.info("🧹 Cleaned up recent_training_data.csv")
+            except Exception as e:
+                logging.warning(f"⚠️ Could not remove recent_training_data.csv: {e}")
 
 def load_current_trades():
     """
@@ -1783,21 +1945,39 @@ def _process_historical_trade_data(trades):
                 sl = trade.get('sl')
                 signal = trade.get('signal')  # 'BUY' or 'SELL'
                 
-                if not all([entry_time, entry_price, tp, sl, signal]):
-                    logging.warning(f"⚠️ Trade missing required fields, skipping")
+                if not all([entry_time is not None, entry_price, tp, sl, signal is not None]):
+                    logging.warning(f"⚠️ Trade missing required fields (entry_time={entry_time}, entry_price={entry_price}, tp={tp}, sl={sl}, signal={signal}), skipping")
                     continue
                 
                 # Only fetch data we don't already have
                 start_time = int(entry_time)
+                entry_dt = datetime.fromtimestamp(entry_time)
+                
+                # Check if entry time is in the future (shouldn't happen but handle it)
+                current_time = time.time()
+                if start_time > current_time:
+                    logging.warning(f"⚠️ Trade entry time {entry_dt} is in the future. Skipping historical data fetch.")
+                    continue
+                
+                # Check if entry is very recent (< 2 minutes ago) - not enough time for TP/SL
+                if current_time - start_time < 120:  # Less than 2 minutes old
+                    logging.info(f"ℹ️  Trade from {entry_dt} is very recent (< 2 min old). Skipping historical data fetch.")
+                    continue
+                
                 if last_timestamp and start_time <= last_timestamp:
                     start_time = last_timestamp + 60  # Start 1 minute after last data
+                    logging.debug(f"   Adjusting start time to {datetime.fromtimestamp(start_time)} (after last training data)")
                 
                 # Fetch data from entry time to now
-                logging.info(f"📥 Fetching historical data for trade from {datetime.fromtimestamp(start_time)}")
+                logging.info(f"📥 Fetching historical data for trade (entry: {entry_dt}, signal: {signal})")
                 new_df = client.get_kline_data(symbol='BTC_USDT', interval='Min1', start=start_time)
                 
                 if new_df is None or new_df.empty:
-                    logging.warning(f"⚠️ No historical data fetched for trade")
+                    logging.warning(f"⚠️ No historical data available for trade from {entry_dt}. Market data may not be available for this time period.")
+                    continue
+                
+                if len(new_df) < 2:
+                    logging.warning(f"⚠️ Insufficient historical data for trade from {entry_dt} (only {len(new_df)} rows). Need at least 2 data points.")
                     continue
                 
                 new_df['open_time'] = pd.to_datetime(new_df['open_time'])
@@ -2242,7 +2422,17 @@ def load_price_history(max_rows=None):
         return None
 
 def determine_trade_outcome_from_history(trade, price_history):
-    """Check if a persisted trade should have been closed based on historical prices."""
+    """
+    Check if a persisted trade should have been closed based on historical prices.
+    
+    A trade should be closed if:
+    1. TP was reached (PROFIT)
+    2. SL was hit (LOSS)
+    3. PnL loss reached $200 USD (LOSS)
+    
+    Returns:
+        tuple: (exit_price, outcome) or (None, None) if trade should remain open
+    """
     entry_ts = trade.get('entry_time')
     if entry_ts is None:
         return None, None
@@ -2251,47 +2441,132 @@ def determine_trade_outcome_from_history(trade, price_history):
     if history.empty:
         return None, None
     
-    for _, row in history.iterrows():
+    entry_price = trade['entry_price']
+    tp = trade['tp']
+    sl = trade['sl']
+    signal = trade['signal']
+    quantity = trade.get('quantity', 0)
+    
+    # Check each historical row chronologically
+    for timestamp, row in history.iterrows():
         high = row.get('high')
         low = row.get('low')
-        if pd.isna(high) or pd.isna(low):
+        close = row.get('close')
+        
+        if pd.isna(high) or pd.isna(low) or pd.isna(close):
             continue
-        if trade['signal'] == 1:  # BUY
-            if low <= trade['sl']:
-                return trade['sl'], 'LOSS'
-            if high >= trade['tp']:
-                return trade['tp'], 'PROFIT'
-        else:  # SELL
-            if high >= trade['sl']:
-                return trade['sl'], 'LOSS'
-            if low <= trade['tp']:
-                return trade['tp'], 'PROFIT'
+        
+        if signal == 1:  # BUY trade
+            # Check SL first (loss condition has priority)
+            if low <= sl:
+                logging.info(f"🔍 Reconciliation: BUY trade hit SL at {timestamp} (entry: ${entry_price:.2f}, SL: ${sl:.2f})")
+                return sl, 'LOSS'
+            
+            # Check $200 loss threshold
+            # For BUY: PnL_USD = quantity * (current_price - entry_price)
+            # Loss of $200 means: quantity * (current_price - entry_price) <= -200
+            # So: current_price <= entry_price - (200 / quantity)
+            if quantity > 0:
+                loss_threshold_price = entry_price - (EARLY_STOP_LOSS_THRESHOLD / quantity)
+                if low <= loss_threshold_price:
+                    # Use the actual low price that triggered the $200 loss threshold
+                    exit_price = min(low, loss_threshold_price)
+                    pnl_usdt = quantity * (exit_price - entry_price)
+                    pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+                    logging.info(f"🔍 Reconciliation: BUY trade hit $200 loss threshold at {timestamp} (entry: ${entry_price:.2f}, exit: ${exit_price:.2f}, PnL: ${pnl_usdt:.2f}, {pnl_pct:.2f}%)")
+                    return exit_price, 'LOSS'
+            
+            # Check TP (profit condition)
+            if high >= tp:
+                logging.info(f"🔍 Reconciliation: BUY trade hit TP at {timestamp} (entry: ${entry_price:.2f}, TP: ${tp:.2f})")
+                return tp, 'PROFIT'
+                
+        else:  # SELL trade (signal == 0)
+            # Check SL first (loss condition has priority)
+            if high >= sl:
+                logging.info(f"🔍 Reconciliation: SELL trade hit SL at {timestamp} (entry: ${entry_price:.2f}, SL: ${sl:.2f})")
+                return sl, 'LOSS'
+            
+            # Check $200 loss threshold
+            # For SELL: PnL_USD = quantity * (entry_price - current_price)
+            # Loss of $200 means: quantity * (entry_price - current_price) <= -200
+            # So: current_price >= entry_price + (200 / quantity)
+            if quantity > 0:
+                loss_threshold_price = entry_price + (EARLY_STOP_LOSS_THRESHOLD / quantity)
+                if high >= loss_threshold_price:
+                    # Use the actual high price that triggered the $200 loss threshold
+                    exit_price = max(high, loss_threshold_price)
+                    pnl_usdt = quantity * (entry_price - exit_price)
+                    pnl_pct = ((entry_price - exit_price) / entry_price) * 100
+                    logging.info(f"🔍 Reconciliation: SELL trade hit $200 loss threshold at {timestamp} (entry: ${entry_price:.2f}, exit: ${exit_price:.2f}, PnL: ${pnl_usdt:.2f}, {pnl_pct:.2f}%)")
+                    return exit_price, 'LOSS'
+            
+            # Check TP (profit condition)
+            if low <= tp:
+                logging.info(f"🔍 Reconciliation: SELL trade hit TP at {timestamp} (entry: ${entry_price:.2f}, TP: ${tp:.2f})")
+                return tp, 'PROFIT'
+    
     return None, None
 
 def reconcile_trades_on_startup(active_trades, simulated_trades, daily_stats, trade_counter):
     """
     When the bot restarts, check if any persisted trades should have been closed
-    based on the latest historical data (training_data.csv). If so, close them,
-    log the results, and update stats/logs accordingly.
+    based on the latest historical data (training_data.csv).
+    
+    Checks for:
+    1. Trades that reached TP (PROFIT)
+    2. Trades that hit SL (LOSS)
+    3. Trades with loss >= $200 USD (LOSS)
+    
+    If any condition is met, close the trade, log the result, and update stats.
     """
     price_history = load_price_history()
     if price_history is None:
+        logging.warning("⚠️ Cannot reconcile trades: no historical data available")
         return active_trades, simulated_trades, daily_stats, trade_counter
     
-    logging.info("🔁 Reconciling persisted trades against historical data...")
+    total_active = len(active_trades)
+    total_simulated = len(simulated_trades)
+    
+    if total_active + total_simulated == 0:
+        logging.info("ℹ️  No persisted trades to reconcile.")
+        return active_trades, simulated_trades, daily_stats, trade_counter
+    
+    logging.info(f"🔁 Reconciling {total_active + total_simulated} persisted trades against historical data...")
+    logging.info(f"   Historical data range: {price_history.index[0]} to {price_history.index[-1]} ({len(price_history)} rows)")
+    
     trades_closed = 0
+    trades_kept = 0
     stats_updated = False
     
     for trades_list, simulated in ((active_trades, False), (simulated_trades, True)):
+        if not trades_list:
+            continue
+            
+        trade_type = "simulated" if simulated else "active"
+        logging.info(f"   Checking {len(trades_list)} {trade_type} trades...")
+        
         indexes_to_remove = []
         for idx, trade in enumerate(trades_list):
+            # Log trade details for debugging
+            entry_time = datetime.fromtimestamp(trade['entry_time']) if trade.get('entry_time') else None
+            signal_map = {0: 'SELL', 1: 'BUY'}
+            signal_str = signal_map.get(trade.get('signal'), 'UNKNOWN')
+            
             exit_price, outcome = determine_trade_outcome_from_history(trade, price_history)
+            
             if exit_price is None:
+                # Trade should remain open
+                logging.info(f"      ✓ {signal_str} trade from {entry_time} remains open (entry: ${trade['entry_price']:.2f}, TP: ${trade['tp']:.2f}, SL: ${trade['sl']:.2f})")
+                trades_kept += 1
                 continue
             
+            # Trade should be closed
             if trade.get('index') is None:
                 trade_counter += 1
                 trade['index'] = trade_counter
+            
+            logging.info(f"      🔚 Closing {signal_str} trade #{trade['index']} from {entry_time} - {outcome}")
             
             pnl = print_trade_result(
                 trade,
@@ -2300,22 +2575,32 @@ def reconcile_trades_on_startup(active_trades, simulated_trades, daily_stats, tr
                 simulated=simulated or TEST,
                 trade_index=trade['index']
             )
+            
             if not (simulated or TEST):
                 update_stats(daily_stats, outcome, pnl)
                 stats_updated = True
+            
             indexes_to_remove.append(idx)
             trades_closed += 1
         
         for idx in reversed(indexes_to_remove):
             trades_list.pop(idx)
     
+    # Summary
+    logging.info(f"\n{'='*60}")
+    logging.info(f"📊 RECONCILIATION SUMMARY")
+    logging.info(f"{'='*60}")
+    logging.info(f"   Total trades checked: {total_active + total_simulated}")
+    logging.info(f"   Trades closed: {trades_closed}")
+    logging.info(f"   Trades kept open: {trades_kept}")
+    logging.info(f"   Remaining active trades: {len(active_trades)}")
+    logging.info(f"   Remaining simulated trades: {len(simulated_trades)}")
+    logging.info(f"{'='*60}\n")
+    
     if trades_closed:
-        logging.info(f"✅ Reconciled and closed {trades_closed} persisted trades before starting loop.")
         save_current_trades(active_trades, simulated_trades, trade_counter)
         if stats_updated:
             save_stats(daily_stats)
-    else:
-        logging.info("ℹ️  No persisted trades required reconciliation.")
     
     return active_trades, simulated_trades, daily_stats, trade_counter
 
