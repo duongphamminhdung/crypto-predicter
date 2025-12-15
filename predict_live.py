@@ -987,13 +987,13 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal
     """
     # CONSERVATIVE base position sizing (% of balance as margin)
     if confidence >= 1.0:
-        base_percentage = 5.0   # Max 5% of balance for perfect confidence
+        base_percentage = 10.0   # Max 5% of balance for perfect confidence
     elif confidence >= 0.95:
-        base_percentage = 4.0   # 4% for very high confidence
+        base_percentage = 7.0   # 4% for very high confidence
     elif confidence >= 0.90:
-        base_percentage = 3.5   # 3.5% of balance
+        base_percentage = 5.5   # 3.5% of balance
     elif confidence >= 0.85:
-        base_percentage = 3.0   # 3% of balance
+        base_percentage = 4.0   # 3% of balance
     elif confidence >= 0.80:
         base_percentage = 2.5   # 2.5% of balance
     elif confidence >= 0.75:
@@ -1006,12 +1006,12 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal
         # Signals match - increase position size by up to 50%
         alignment_multiplier = 1.0 + (confidence * 0.5)  # 1.0 to 1.5 multiplier
         trade_percentage = base_percentage * alignment_multiplier
-        # Cap at 7.5% of balance for safety (5% * 1.5)
-        if trade_percentage > 7.5:
-            trade_percentage = 7.5
+        # Cap at 10.5% of balance for safety
+        if trade_percentage > 10.5:
+            trade_percentage = 10.5
     else:
-        # Signals mismatch - reduce position size by 50%
-        trade_percentage = base_percentage * 0.5
+        # Signals mismatch - reduce position size by 70%
+        trade_percentage = base_percentage * 0.7
     
     # Calculate margin in USDT
     margin_usdt = balance * (trade_percentage / 100)
@@ -2127,17 +2127,16 @@ def load_stats():
     
     # Get or create today's stats
     if today not in all_stats:
-        # Initialize balance only in TEST mode
+        # Always initialize balance (both in TEST and LIVE mode to preserve continuity)
         balance_value = None
-        if TEST:
-            # Get previous day's balance or initialize to $1000
-            previous_balance = 1000.0  # Default starting balance
-            if all_stats:
-                # Get the most recent day's balance
-                sorted_dates = sorted(all_stats.keys(), reverse=True)
-                if sorted_dates:
-                    previous_balance = all_stats[sorted_dates[0]].get('balance', 1000.0)
-            balance_value = previous_balance
+        # Get previous day's balance or initialize to $1000
+        previous_balance = 1000.0  # Default starting balance
+        if all_stats:
+            # Get the most recent day's balance
+            sorted_dates = sorted(all_stats.keys(), reverse=True)
+            if sorted_dates:
+                previous_balance = all_stats[sorted_dates[0]].get('balance', 1000.0)
+        balance_value = previous_balance
         
         all_stats[today] = {
             "date": today,
@@ -2149,9 +2148,8 @@ def load_stats():
             "win_rate_pct": 0.0
         }
         
-        # Add balance only in TEST mode
-        if TEST and balance_value is not None:
-            all_stats[today]["balance"] = balance_value
+        # Always add balance to preserve continuity between days
+        all_stats[today]["balance"] = balance_value
     
     return all_stats[today]
 
