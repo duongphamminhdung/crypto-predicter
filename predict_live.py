@@ -87,12 +87,17 @@ def get_feature_columns():
                                     # Only trade with very high confidence to minimize risk
 CONFIDENCE_THRESHOLD_TRADE  = 0.70  # Only trade when confidence > 70%
 CONFIDENCE_THRESHOLD_TEST   = 0.55  # Trigger model testing when below 55%
-MAX_POSITION_RISK           = 0.10  # Max 10% of balance at risk per trade
-MAX_LEVERAGE                = 75    # Exchange leverage cap
+MAX_POSITION_RISK           = 0.07  # Max 7% of balance at risk per trade (more aggressive)
+MAX_LEVERAGE                = 75    # Exchange leverage cap (used more aggressively - max 15x in practice)
                                     # Early stop parameters
 EARLY_STOP_MAX_TIME_MINUTES = 300   # Close trade if it's been red for this long (minutes) - 5 hours
 EARLY_STOP_OPPOSITE_SIGNAL  = True  # Close losing trades if model predicts opposite signal
-EARLY_STOP_LOSS_THRESHOLD   = 200.0 # Close trade when loss reaches $200 USD
+EARLY_STOP_LOSS_THRESHOLD   = 5.0    # Close trade when loss reaches $5 USD (standardized, tight risk control)
+MIN_LOSS_FOR_OPPOSITE_SIGNAL = 3.0   # Require at least $3 loss before opposite signal can close trade
+                                    # Global risk limits
+MAX_DAILY_LOSS              = 500.0  # Stop trading if daily loss exceeds $500 USD
+MAX_CONCURRENT_TRADES       = 5      # Maximum number of concurrent open positions
+MAX_TOTAL_EXPOSURE_PCT      = 10.00   # Max 1000% of balance as total notional exposure (protected by early stops)
                                     # Early stop triggers when BOTH conditions are met: time limit AND opposite signal
                                     # Model refinement parameters
 REFINEMENT_INTERVAL_SECONDS = 3600  # Trigger model refinement every 1 hour (3600 seconds)
@@ -103,7 +108,7 @@ FINE_TUNE_TP_SL_RATIO      = 0.3
                                     # ═══════════════════════════════════════════════════════════
 
 def setup_logging():
-    """Configure logging to file and console."""
+    """Configure logging to file and console in append mode."""
     # Using basicConfig to set up handlers, ensuring it runs only once
     if not logging.getLogger().handlers:
         # Use append mode for log file
@@ -315,9 +320,12 @@ def main():
                         save_stats(daily_stats)
                     trades_to_remove.append(i)
             
-            # Remove completed trades (iterate in reverse to avoid index issues)
-            for i in reversed(trades_to_remove):
-                trades_list.pop(i)
+            # Remove completed trades (filter list to avoid index issues)
+            trades_list[:] = [trade for i, trade in enumerate(trades_list) if i not in trades_to_remove]
+            
+            # Log trade count for monitoring
+            if trades_to_remove:
+                logging.info(f"🧹 Removed {len(trades_to_remove)} completed trade(s). Remaining: {len(trades_list)}")
             
                 # Save current trades to file after checking for completion
             save_current_trades(active_trades, simulated_trades, trade_counter)
@@ -537,11 +545,21 @@ def main():
                 tp_based_signal = predicted_signal  # Update tp_based_signal if TP calc failed
                 # model_predicted_signal already set before try block
             
-            # Check for early stops on active trades (using model's predicted signal)
-            # Early stop triggers if trade has been losing for >5 hours AND model predicts opposite signal
+            # Check for early stops on active trades (using TP-based signal with confidence >= 0.7)
+            # Early stop triggers if trade has been losing for >5 hours AND TP-based signal (with conf >= 0.7) predicts opposite signal
             if trades_list:
                 for i, trade in enumerate(trades_list):
-                    if check_early_stop(trade, current_price, model_predicted_signal):
+                    # Only use TP-based signal for early stop if confidence is >= 0.7
+                    if confidence >= 0.7:
+                        early_stop_signal = tp_based_signal
+                        signal_type = "tp-based"
+                        logging.debug(f"🔍 Early stop check: Using TP-based signal ({tp_based_signal}) with confidence {confidence:.2f} >= 0.7")
+                    else:
+                        early_stop_signal = model_predicted_signal
+                        signal_type = "model"
+                        logging.debug(f"🔍 Early stop check: Using model signal ({model_predicted_signal}) with confidence {confidence:.2f} < 0.7")
+                    
+                    if check_early_stop(trade, current_price, early_stop_signal, signal_type):
                         # Use stored trade index if available, otherwise assign new one
                         trade_index = trade.get('index', None)
                         if trade_index is None:
@@ -556,11 +574,13 @@ def main():
                         if not TEST:
                             update_stats(daily_stats, result, pnl)
                             save_stats(daily_stats)
-                        trades_list.pop(i)
+                        # Mark trade for removal
+                        trades_to_remove_early = [i]
+                        trades_list[:] = [trade for idx, trade in enumerate(trades_list) if idx not in trades_to_remove_early]
                         logging.info(f"🛑 Trade closed due to early stop condition ({result.lower()}: {pnl_pct:+.2f}%)")
                         # Save current trades after closing
                         save_current_trades(active_trades, simulated_trades, trade_counter)
-                        break  # Only close one trade per cycle to avoid index issues
+                        break  # Still break after one early stop per cycle for stability
             
             # Early Profit-Taking: Close profitable trades (>= 0.15%) when TP-based signal is opposite
             # This check happens after early stop check and before risk management
@@ -754,9 +774,14 @@ def main():
                     logging.info(f"⏭️  Skipping trading due to recent refinement trigger "
                                f"({time_since_skip:.0f}s elapsed, {remaining_time:.0f}s remaining)")
             
+            # Global risk management checks before trading
+            can_trade, risk_reason = check_global_risk_limits(daily_stats, trades_list, simulated=TEST)
+            
             # Trading and Learning Logic - STRICT THRESHOLDS FOR FUTURES
             if skip_trading_due_to_refinement:
                 logging.info("⏸️  In 3-minute skip period - no trading this cycle")
+            elif not can_trade:
+                logging.info(f"⏸️  Trading blocked by global risk management: {risk_reason}")
             elif testing_model:
                 logging.info("\n🧪 Testing mode: Both models running in parallel. Using current model for trading.")
                 # Still execute trades with current model during testing if VERY high confidence
@@ -829,7 +854,7 @@ def main():
                         save_current_trades(active_trades, simulated_trades, trade_counter)
                 else:
                     logging.info(f"⏸️  Confidence {confidence:.2f} below trading threshold ({CONFIDENCE_THRESHOLD_TRADE}). Waiting for better signal.")
-            elif not skip_trading_due_to_refinement and confidence >= CONFIDENCE_THRESHOLD_TRADE:
+            elif not skip_trading_due_to_refinement and can_trade and confidence >= CONFIDENCE_THRESHOLD_TRADE:
                 # ONLY trade with high confidence (>70%) for futures
                 # Check if we should skip this trade: only open new trade if entry is better OR confidence is higher (>=0.9)
                 should_skip = False
@@ -897,7 +922,7 @@ def main():
                         active_trades.append(new_trade)
                     # Save current trades after opening new trade
                     save_current_trades(active_trades, simulated_trades, trade_counter)
-            elif not skip_trading_due_to_refinement and confidence < CONFIDENCE_THRESHOLD_TEST:
+            elif not skip_trading_due_to_refinement and can_trade and confidence < CONFIDENCE_THRESHOLD_TEST:
                 # Trigger model testing and fine-tuning when confidence is below threshold
                 logging.info(f"\n⚠️ Confidence {confidence:.2f} below threshold ({CONFIDENCE_THRESHOLD_TEST})")
                 logging.info("Triggering model fine-tuning with recent data...")
@@ -936,40 +961,40 @@ def main():
 def determine_leverage(confidence):
     """
     Determine leverage based on confidence - CONSERVATIVE approach
-    Lower leverage = smaller losses from price movements
+    Uses moderate leverage (5-15x) to balance profit potential with risk management
     """
     if confidence >= 0.98:
-        return min(10, MAX_LEVERAGE)  # Max 10x even for perfect confidence
+        return min(15, MAX_LEVERAGE)  # Max 15x for perfect confidence
     elif confidence >= 0.90:
-        return min(8, MAX_LEVERAGE)   # 8x for very high confidence
+        return min(12, MAX_LEVERAGE)  # 12x for very high confidence
     elif confidence >= 0.85:
-        return min(6, MAX_LEVERAGE)   # 6x
+        return min(10, MAX_LEVERAGE)  # 10x
     elif confidence >= 0.80:
-        return min(5, MAX_LEVERAGE)   # 5x
+        return min(8, MAX_LEVERAGE)   # 8x
     elif confidence >= 0.75:
-        return min(4, MAX_LEVERAGE)   # 4x
+        return min(6, MAX_LEVERAGE)   # 6x
     else:
-        return min(3, MAX_LEVERAGE)   # Min 3x leverage
+        return min(5, MAX_LEVERAGE)   # Min 5x leverage
 
 def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal_aligned=True):
     """
     Calculate recommended trade amount (margin) based on confidence level and signal alignment.
-    CONSERVATIVE position sizing to protect capital in leveraged trading.
+    AGGRESSIVE position sizing for higher profit potential in leveraged trading.
     
     Base position sizing by confidence (% of balance as margin):
-    - 1.0: 5% of balance
-    - 0.95-0.999: 4% of balance
-    - 0.90-0.95: 3.5% of balance
-    - 0.85-0.90: 3% of balance
-    - 0.80-0.85: 2.5% of balance
-    - 0.75-0.80: 2% of balance
-    - 0.70-0.75: 1.5% of balance
+    - 1.0: 7% of balance (AGGRESSIVE)
+    - 0.95-0.999: 6% of balance
+    - 0.90-0.95: 5% of balance
+    - 0.85-0.90: 4% of balance
+    - 0.80-0.85: 3% of balance
+    - 0.75-0.80: 2.5% of balance
+    - 0.70-0.75: 2% of balance
     
     When signals are aligned (model signal matches TP-based signal):
     - Position size is increased by up to 50% based on confidence
     
     When signals are mismatched:
-    - Position size is reduced by 50%
+    - Position size is reduced by 40%
     
     Args:
         confidence: Model confidence (0.0 to 1.0)
@@ -985,33 +1010,33 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal
         notional_usdt      : Effective notional size (margin * leverage)
         leverage_used      : Leverage multiplier applied to this trade
     """
-    # CONSERVATIVE base position sizing (% of balance as margin)
+    # AGGRESSIVE base position sizing (% of balance as margin)
     if confidence >= 1.0:
-        base_percentage = 10.0   # Max 5% of balance for perfect confidence
+        base_percentage = 7.0    # Max 7% of balance for perfect confidence (AGGRESSIVE)
     elif confidence >= 0.95:
-        base_percentage = 7.0   # 4% for very high confidence
+        base_percentage = 6.0    # 6% for very high confidence
     elif confidence >= 0.90:
-        base_percentage = 5.5   # 3.5% of balance
+        base_percentage = 5.0    # 5% of balance
     elif confidence >= 0.85:
-        base_percentage = 4.0   # 3% of balance
+        base_percentage = 4.0    # 4% of balance
     elif confidence >= 0.80:
-        base_percentage = 2.5   # 2.5% of balance
+        base_percentage = 3.0    # 3% of balance
     elif confidence >= 0.75:
-        base_percentage = 2.0   # 2% of balance
+        base_percentage = 2.5    # 2.5% of balance
     else:  # 0.70 - 0.75
-        base_percentage = 1.5   # Min 1.5% of balance
+        base_percentage = 2.0    # Min 2% of balance
     
     # Adjust position size based on signal alignment
     if signal_aligned:
         # Signals match - increase position size by up to 50%
         alignment_multiplier = 1.0 + (confidence * 0.5)  # 1.0 to 1.5 multiplier
         trade_percentage = base_percentage * alignment_multiplier
-        # Cap at 10.5% of balance for safety
-        if trade_percentage > 10.5:
-            trade_percentage = 10.5
+        # Cap at 10% of balance for safety
+        if trade_percentage > 10.0:
+            trade_percentage = 10.0
     else:
-        # Signals mismatch - reduce position size by 70%
-        trade_percentage = base_percentage * 0.7
+        # Signals mismatch - reduce position size by 40%
+        trade_percentage = base_percentage * 0.6
     
     # Calculate margin in USDT
     margin_usdt = balance * (trade_percentage / 100)
@@ -1026,8 +1051,8 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal
     leverage_used = determine_leverage(confidence)
     notional_usdt = margin_usdt * leverage_used
     
-    # Additional safety check: Cap notional at 50% of balance to prevent excessive exposure
-    max_notional = balance * 0.5  # Max 50% of balance as notional exposure
+    # Additional safety check: Cap notional at 50% of balance to allow aggressive trading
+    max_notional = balance * MAX_TOTAL_EXPOSURE_PCT  # Max 30% of balance as notional exposure
     if notional_usdt > max_notional:
         notional_usdt = max_notional
         leverage_used = notional_usdt / margin_usdt if margin_usdt > 0 else 1
@@ -1048,6 +1073,62 @@ def calculate_trade_amount(confidence, balance, current_price, stop_loss, signal
     )
     
     return trade_percentage, margin_usdt, trade_quantity_btc, notional_usdt, leverage_used
+
+def check_global_risk_limits(daily_stats, active_trades, simulated=False):
+    """
+    Global risk management checks before opening new trades.
+    Prevents excessive risk exposure across multiple dimensions.
+    
+    Args:
+        daily_stats: Current day's trading statistics
+        active_trades: List of currently active trades
+        simulated: Whether this is a simulated (TEST mode) check
+    
+    Returns:
+        tuple: (bool: can_trade, str: reason) - True if safe to trade, False with reason if not
+    """
+    trade_mode = "SIMULATED" if simulated else "LIVE"
+    
+    # CHECK 1: Daily loss limit
+    daily_pnl = daily_stats.get('total_profit_usdt', 0)
+    if daily_pnl < -MAX_DAILY_LOSS:
+        reason = f"Daily loss limit reached (${daily_pnl:.2f} < -${MAX_DAILY_LOSS:.2f})"
+        logging.warning(f"🛑 [{trade_mode}] Global Risk: {reason}")
+        return False, reason
+    
+    # CHECK 2: Maximum concurrent positions
+    if len(active_trades) >= MAX_CONCURRENT_TRADES:
+        reason = f"Maximum concurrent positions reached ({len(active_trades)}/{MAX_CONCURRENT_TRADES})"
+        logging.warning(f"🛑 [{trade_mode}] Global Risk: {reason}")
+        # Add detailed trade count logging for debugging
+        trade_summary = [f"#{t.get('index', '?')}:{t.get('side', '?')}@${t.get('entry_price', 0):.0f}" for t in active_trades]
+        logging.info(f"   Active trades breakdown: {trade_summary}")
+        return False, reason
+    
+    # CHECK 3: Total exposure limit
+    total_notional = sum(t.get('notional_usdt', 0) for t in active_trades)
+    current_balance = daily_stats.get('balance', 1000.0) if simulated else None
+    
+    if current_balance is not None:  # Only check in TEST mode where we track balance
+        max_exposure = current_balance * MAX_TOTAL_EXPOSURE_PCT
+        if total_notional > max_exposure:
+            reason = f"Total exposure limit reached (${total_notional:.2f} > ${max_exposure:.2f})"
+            logging.warning(f"🛑 [{trade_mode}] Global Risk: {reason}")
+            return False, reason
+    
+    # CHECK 4: Consecutive losses protection (optional enhancement)
+    failed_trades = daily_stats.get('failed_trades', 0)
+    successful_trades = daily_stats.get('successful_trades', 0)
+    
+    # If we have 3+ consecutive losses (no wins today and 3+ losses), reduce trading
+    if failed_trades >= 3 and successful_trades == 0:
+        reason = f"Consecutive losses detected ({failed_trades} losses, 0 wins today) - caution advised"
+        logging.warning(f"⚠️ [{trade_mode}] Global Risk: {reason}")
+        # This is a warning, not a hard stop - return True but log the concern
+    
+    # All checks passed
+    logging.debug(f"✅ [{trade_mode}] Global risk checks passed (PnL: ${daily_pnl:.2f}, Positions: {len(active_trades)}/{MAX_CONCURRENT_TRADES}, Exposure: ${total_notional:.2f})")
+    return True, "All risk checks passed"
 
 def print_prediction(signal, confidence, tp, sl, trade_percentage, margin_usdt, trade_quantity_btc, notional_usdt, leverage, balance):
     signal_map = {0: 'SELL', 1: 'BUY'}
@@ -1317,7 +1398,7 @@ def print_trade_result(trade, exit_price, result, simulated=False, trade_index=N
 def execute_trade(signal, exchange, quantity, entry_price, tp, sl, margin_usdt, notional_usdt, leverage, confidence=None):
     """Execute trade and return trade info for tracking"""
     side = {0: 'SELL', 1: 'BUY'}[signal]
-    logging.info(f"\n💰 Confidence >= 0.65. Placing {side} order.")
+    logging.info(f"\n💰 Confidence >= 0.70. Placing {side} order.")
     # Note: For futures, you may need to use a different order placement method
     # This will depend on your Exchange class implementation for futures
     exchange.place_order('BTC_USDT', 'MARKET', side, quantity)
@@ -1394,49 +1475,54 @@ def is_trade_complete(trade, current_price):
     else:   # SELL trade
         return current_price <= trade['tp']
 
-def check_early_stop(trade, current_price, model_predicted_signal=None):
+def check_early_stop(trade, current_price, signal_for_early_stop=None, signal_type="model"):
     """
-    Check if trade should be early stopped based on:
-    1. Loss reaches $200 USD in PnL
-    2. Trade has been red (losing) for more than 5 hours
-    3. Model predicts opposite signal (if enabled)
+    SIMPLIFIED early stop logic - checks three independent conditions:
+    1. Hard loss limit: Close immediately if loss >= $5 (STANDARDIZED, tight risk control)
+    2. Time-based exit: Close if trade has been losing for > 5 hours
+    3. Signal reversal: Close if opposite signal detected with minimum loss >= $3
     
-    Now closes immediately if opposite signal is predicted OR loss >= $200 USD.
+    Each condition is independent and can trigger trade closure.
+    
+    Args:
+        trade: The active trade dictionary
+        current_price: Current market price
+        signal_for_early_stop: Signal to use for early stop decision (0=SELL, 1=BUY)
+        signal_type: Type of signal being used ("model" or "tp-based")
+    
+    Returns:
+        bool: True if trade should be closed, False otherwise
     """
     pnl_pct, pnl_usdt = calculate_unrealized_pnl(trade, current_price)
     duration_minutes = (time.time() - trade['entry_time']) / 60
     
-    # Check if loss reaches $200 threshold - IMMEDIATE CLOSE
+    # CONDITION 1: Hard loss limit - IMMEDIATE CLOSE (STANDARDIZED to $5 for tight risk control)
     if pnl_usdt <= -EARLY_STOP_LOSS_THRESHOLD:
-        logging.warning(f"🛑 Early stop: Loss threshold reached (${pnl_usdt:.2f} <= -${EARLY_STOP_LOSS_THRESHOLD:.2f})")
+        logging.warning(f"🛑 Hard Stop: Loss threshold reached (${pnl_usdt:.2f} <= -${EARLY_STOP_LOSS_THRESHOLD:.2f})")
         return True
     
-    # Check if trade is losing (red)
+    # Skip remaining checks if trade is profitable
     if pnl_pct >= 0:
-        return False  # Trade is green, no early stop
+        return False
     
-    # Condition 1: Trade has been red for more than 5 hours (300 minutes)
-    time_condition = duration_minutes >= EARLY_STOP_MAX_TIME_MINUTES
-    
-    # Condition 2: Model predicts opposite signal (if enabled)
-    opposite_signal_condition = False
-    if EARLY_STOP_OPPOSITE_SIGNAL and model_predicted_signal is not None:
-        # Check if model predicted signal is opposite to current trade
-        if trade['signal'] == 1 and model_predicted_signal == 0:  # BUY trade, model predicts SELL
-            opposite_signal_condition = True
-        elif trade['signal'] == 0 and model_predicted_signal == 1:  # SELL trade, model predicts BUY
-            opposite_signal_condition = True
-    
-    # If model predicts opposite, close immediately
-    if opposite_signal_condition:
-        logging.warning(f"🛑 Early stop: Opposite model signal detected. Closing trade (loss: {pnl_pct:.2f}%, ${pnl_usdt:.2f}, duration: {duration_minutes:.1f} min)")
+    # CONDITION 2: Time-based exit for losing trades (> 5 hours)
+    if duration_minutes >= EARLY_STOP_MAX_TIME_MINUTES:
+        logging.warning(f"🛑 Time Stop: Trade losing for {duration_minutes/60:.1f} hours (${pnl_usdt:.2f}, {pnl_pct:.2f}%)")
         return True
     
-    # Legacy: only if BOTH conditions are True
-    if time_condition and opposite_signal_condition:
-        logging.warning(f"🛑 Early stop: Trade has been red for {duration_minutes:.1f} minutes ({duration_minutes/60:.1f} hours) AND model predicts opposite signal (loss: {pnl_pct:.2f}%, ${pnl_usdt:.2f})")
-        return True
+    # CONDITION 3: Signal reversal with minimum loss threshold (STANDARDIZED to $3)
+    if EARLY_STOP_OPPOSITE_SIGNAL and signal_for_early_stop is not None:
+        # Check if signal is opposite to current trade direction
+        is_opposite = (
+            (trade['signal'] == 1 and signal_for_early_stop == 0) or  # BUY trade, SELL signal
+            (trade['signal'] == 0 and signal_for_early_stop == 1)     # SELL trade, BUY signal
+        )
+        
+        if is_opposite and pnl_usdt <= -MIN_LOSS_FOR_OPPOSITE_SIGNAL:
+            logging.warning(f"🛑 Signal Reversal: {signal_type.upper()} signal opposite with loss (${pnl_usdt:.2f} <= -${MIN_LOSS_FOR_OPPOSITE_SIGNAL:.2f})")
+            return True
     
+    # No stop conditions met
     return False
 
 def check_profitable_trade_tp_signal_exit(trades_list, current_price, tp_based_signal):
@@ -2191,11 +2277,9 @@ def save_stats(today_stats):
     with open(STATS_FILE, 'w') as f:
         json.dump(all_stats, f, indent=4)
     
+    balance = today_stats.get('balance', 1000.0)
     log_msg = (f"📊 Daily stats saved for {date_key}: Wins={today_stats['successful_trades']}, Losses={today_stats['failed_trades']}, "
-              f"P&L=${today_stats['total_profit_usdt']:.2f}, Win Rate={today_stats['win_rate_pct']:.2f}%")
-    if TEST:
-        balance = today_stats.get('balance', 1000.0)
-        log_msg += f", Balance=${balance:.2f}"
+              f"P&L=${today_stats['total_profit_usdt']:.2f}, Balance=${balance:.2f}, Win Rate={today_stats['win_rate_pct']:.2f}%")
     logging.info(log_msg)
 
 def update_stats(stats, result, pnl):
@@ -2207,21 +2291,26 @@ def update_stats(stats, result, pnl):
     
     stats['total_profit_usdt'] += pnl
     
-    # Update balance only in TEST mode (mock balance simulation)
-    if TEST:
-        if 'balance' not in stats:
-            stats['balance'] = 1000.0  # Initialize if missing
-        stats['balance'] += pnl
-        
-        # Ensure balance doesn't go negative (minimum $0)
-        if stats['balance'] < 0:
-            stats['balance'] = 0.0
+    # Update balance: Add P&L to current balance (both TEST and LIVE modes)
+    if 'balance' not in stats:
+        stats['balance'] = 1000.0  # Initialize if missing
+    
+    # Add P&L to balance (this represents actual account equity change)
+    stats['balance'] += pnl
+    
+    # Ensure balance doesn't go negative (minimum $0)
+    if stats['balance'] < 0:
+        stats['balance'] = 0.0
 
 def initialize_stats_from_trades_log():
-    """Initialize trading stats from trades_log.json at bot startup. Processes all days."""
+    """
+    Initialize trading stats from trades_log.json at bot startup. Processes all days.
+    Recalculates balance from scratch in TEST mode only to ensure simulated balance accuracy.
+    In LIVE mode, balance is tracked separately and not modified by this function.
+    """
     today = datetime.now().strftime("%Y-%m-%d")
     
-    # Load existing stats to preserve previous days
+    # Load existing stats to preserve previous days structure, but we'll recalculate balances
     all_stats = {}
     if os.path.exists(STATS_FILE):
         with open(STATS_FILE, 'r') as f:
@@ -2238,6 +2327,10 @@ def initialize_stats_from_trades_log():
                         all_stats = loaded_data
             except json.JSONDecodeError:
                 all_stats = {}
+    
+    # Log that we're recalculating balances
+    if all_stats:
+        logging.info("🔄 Recalculating all balances using new algorithm from trades_log.json...")
     
     # Initialize today's stats
     if today not in all_stats:
@@ -2319,20 +2412,18 @@ def initialize_stats_from_trades_log():
                 except (IndexError, ValueError):
                     continue
             
-            # Calculate balance by processing trades chronologically (only in TEST mode)
+            # Calculate balance by processing trades chronologically
             sorted_trade_dates = sorted(trades_by_day.keys())
-            if TEST:
-                # Start with initial balance of $1000 or previous day's balance
-                initial_balance = 1000.0
-                if all_stats:
-                    sorted_dates = sorted(all_stats.keys())
-                    if sorted_dates:
-                        initial_balance = all_stats[sorted_dates[0]].get('balance', 1000.0)
-                
-                # Process trades chronologically to calculate balance
-                running_balance = initial_balance
-            else:
-                running_balance = None  # Not used when TEST=False, but initialize for clarity
+            
+            # Start with initial balance of $1000 or carry forward from previous day
+            initial_balance = 1000.0
+            if all_stats:
+                sorted_dates = sorted(all_stats.keys())
+                if sorted_dates:
+                    initial_balance = all_stats[sorted_dates[0]].get('balance', 1000.0)
+            
+            # Process trades chronologically to calculate balance
+            running_balance = initial_balance
             
             for date_key in sorted_trade_dates:
                 day_stats = trades_by_day[date_key]
@@ -2345,11 +2436,9 @@ def initialize_stats_from_trades_log():
                         "successful_trades": 0,
                         "failed_trades": 0,
                         "total_profit_usdt": 0.0,
-                        "win_rate_pct": 0.0
+                        "win_rate_pct": 0.0,
+                        "balance": running_balance  # Always track balance
                     }
-                    # Add balance only in TEST mode
-                    if TEST:
-                        all_stats[date_key]["balance"] = running_balance
                 
                 # Update stats for this day
                 all_stats[date_key]['successful_trades'] = day_stats['successful_trades']
@@ -2374,17 +2463,30 @@ def initialize_stats_from_trades_log():
             with open(STATS_FILE, 'w') as f:
                 json.dump(all_stats, f, indent=4)
             
-            # Log summary
+            # Log summary with balance recalculation notice
             today_trades = trades_by_day.get(today, {})
             today_total = today_trades.get('successful_trades', 0) + today_trades.get('failed_trades', 0)
+            balance = all_stats[today].get('balance', 1000.0)
+            
+            # Calculate total balance change for verification
+            if len(sorted_trade_dates) > 1:
+                first_date = sorted_trade_dates[0]
+                last_date = sorted_trade_dates[-1]
+                initial_balance = 1000.0
+                if all_stats:
+                    sorted_dates = sorted(all_stats.keys())
+                    if sorted_dates and first_date in all_stats:
+                        # Get balance before first trade
+                        initial_balance = all_stats[first_date].get('balance', 1000.0) - all_stats[first_date].get('total_profit_usdt', 0)
+                final_balance = all_stats[last_date].get('balance', 1000.0)
+                total_change = final_balance - initial_balance
+                logging.info(f"✅ Balance recalculated: ${initial_balance:.2f} → ${final_balance:.2f} (change: ${total_change:+.2f})")
+            
             log_msg = (f"📊 Initialized stats from {TRADES_LOG_FILE}: "
                       f"Processed {len(trades_by_day)} day(s). Today: "
                       f"Wins={all_stats[today]['successful_trades']}, Losses={all_stats[today]['failed_trades']}, "
-                      f"P&L=${all_stats[today]['total_profit_usdt']:.2f}, Win Rate={all_stats[today]['win_rate_pct']:.2f}%")
-            if TEST:
-                balance = all_stats[today].get('balance', 1000.0)
-                log_msg += f", Balance=${balance:.2f}"
-            log_msg += f" ({today_total} trades)"
+                      f"P&L=${all_stats[today]['total_profit_usdt']:.2f}, Balance=${balance:.2f}, "
+                      f"Win Rate={all_stats[today]['win_rate_pct']:.2f}% ({today_total} trades)")
             logging.info(log_msg)
             
             return all_stats[today]
@@ -2426,7 +2528,7 @@ def determine_trade_outcome_from_history(trade, price_history):
     A trade should be closed if:
     1. TP was reached (PROFIT)
     2. SL was hit (LOSS)
-    3. PnL loss reached $200 USD (LOSS)
+    3. PnL loss reached $5 USD (LOSS) - using EARLY_STOP_LOSS_THRESHOLD
     
     Returns:
         tuple: (exit_price, outcome) or (None, None) if trade should remain open
@@ -2460,10 +2562,10 @@ def determine_trade_outcome_from_history(trade, price_history):
                 logging.info(f"🔍 Reconciliation: BUY trade hit SL at {timestamp} (entry: ${entry_price:.2f}, SL: ${sl:.2f})")
                 return sl, 'LOSS'
             
-            # Check $200 loss threshold
+            # Check $5 loss threshold (using EARLY_STOP_LOSS_THRESHOLD)
             # For BUY: PnL_USD = quantity * (current_price - entry_price)
-            # Loss of $200 means: quantity * (current_price - entry_price) <= -200
-            # So: current_price <= entry_price - (200 / quantity)
+            # Loss of $5 means: quantity * (current_price - entry_price) <= -5
+            # So: current_price <= entry_price - (5 / quantity)
             if quantity > 0:
                 loss_threshold_price = entry_price - (EARLY_STOP_LOSS_THRESHOLD / quantity)
                 if low <= loss_threshold_price:
@@ -2471,7 +2573,7 @@ def determine_trade_outcome_from_history(trade, price_history):
                     exit_price = min(low, loss_threshold_price)
                     pnl_usdt = quantity * (exit_price - entry_price)
                     pnl_pct = ((exit_price - entry_price) / entry_price) * 100
-                    logging.info(f"🔍 Reconciliation: BUY trade hit $200 loss threshold at {timestamp} (entry: ${entry_price:.2f}, exit: ${exit_price:.2f}, PnL: ${pnl_usdt:.2f}, {pnl_pct:.2f}%)")
+                    logging.info(f"🔍 Reconciliation: BUY trade hit ${EARLY_STOP_LOSS_THRESHOLD} loss threshold at {timestamp} (entry: ${entry_price:.2f}, exit: ${exit_price:.2f}, PnL: ${pnl_usdt:.2f}, {pnl_pct:.2f}%)")
                     return exit_price, 'LOSS'
             
             # Check TP (profit condition)
@@ -2485,10 +2587,10 @@ def determine_trade_outcome_from_history(trade, price_history):
                 logging.info(f"🔍 Reconciliation: SELL trade hit SL at {timestamp} (entry: ${entry_price:.2f}, SL: ${sl:.2f})")
                 return sl, 'LOSS'
             
-            # Check $200 loss threshold
+            # Check $5 loss threshold (using EARLY_STOP_LOSS_THRESHOLD)
             # For SELL: PnL_USD = quantity * (entry_price - current_price)
-            # Loss of $200 means: quantity * (entry_price - current_price) <= -200
-            # So: current_price >= entry_price + (200 / quantity)
+            # Loss of $5 means: quantity * (entry_price - current_price) <= -5
+            # So: current_price >= entry_price + (5 / quantity)
             if quantity > 0:
                 loss_threshold_price = entry_price + (EARLY_STOP_LOSS_THRESHOLD / quantity)
                 if high >= loss_threshold_price:
@@ -2496,7 +2598,7 @@ def determine_trade_outcome_from_history(trade, price_history):
                     exit_price = max(high, loss_threshold_price)
                     pnl_usdt = quantity * (entry_price - exit_price)
                     pnl_pct = ((entry_price - exit_price) / entry_price) * 100
-                    logging.info(f"🔍 Reconciliation: SELL trade hit $200 loss threshold at {timestamp} (entry: ${entry_price:.2f}, exit: ${exit_price:.2f}, PnL: ${pnl_usdt:.2f}, {pnl_pct:.2f}%)")
+                    logging.info(f"🔍 Reconciliation: SELL trade hit ${EARLY_STOP_LOSS_THRESHOLD} loss threshold at {timestamp} (entry: ${entry_price:.2f}, exit: ${exit_price:.2f}, PnL: ${pnl_usdt:.2f}, {pnl_pct:.2f}%)")
                     return exit_price, 'LOSS'
             
             # Check TP (profit condition)
@@ -2514,7 +2616,7 @@ def reconcile_trades_on_startup(active_trades, simulated_trades, daily_stats, tr
     Checks for:
     1. Trades that reached TP (PROFIT)
     2. Trades that hit SL (LOSS)
-    3. Trades with loss >= $200 USD (LOSS)
+    3. Trades with loss >= $5 USD (LOSS) - using EARLY_STOP_LOSS_THRESHOLD
     
     If any condition is met, close the trade, log the result, and update stats.
     """
