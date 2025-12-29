@@ -104,28 +104,11 @@ train_model() {
     fi
 }
 
-SCRIPT_NAME="predict_live.py"
-PID_FILE="bot_process.pid"
-LOG_FILE="trading_bot.log"
-
 start_bot() {
     print_header "Starting Live Trading Bot"
     
     check_python
     
-    # 1. Check if already running (Safety Mechanism)
-    if [ -f "$PID_FILE" ]; then
-        OLD_PID=$(cat "$PID_FILE")
-        if ps -p "$OLD_PID" > /dev/null; then
-            print_warning "Bot is already running with PID: $OLD_PID"
-            print_info "Stop it first using: ./run.sh stop"
-            return
-        else
-            # File exists but process is dead -> Clean it up
-            rm "$PID_FILE"
-        fi
-    fi
-
     # Check if model exists in ../model directory
     MODEL_DIR="../model"
     if [ ! -f "$MODEL_DIR/btc_predicter_model.pth" ]; then
@@ -151,63 +134,67 @@ start_bot() {
     print_info "  • Execute trades when confidence ≥ 0.65"
     print_info "  • Auto fine-tune with time-weighted learning when confidence < 0.4 or trade loss"
     print_info "  • Log all activity to trading_bot.log"
+    print_info "  • Save daily stats to trading_stats.json"
+    echo ""
+    print_info "Press Ctrl+C to stop the bot, or run './run.sh stop' from another terminal"
+    echo ""
     
-    print_info "Starting the bot in BACKGROUND..."
-    
-    # 2. THE FIX: Run with nohup, in background (&), and save PID
-    nohup $PYTHON_CMD "$SCRIPT_NAME" > "$LOG_FILE" 2>&1 &
-    
-    # 3. Save the PID immediately
-    NEW_PID=$!
-    echo $NEW_PID > "$PID_FILE"
-    
-    print_info "Bot started successfully! (PID: $NEW_PID)"
-    print_info "You can now run other cells. To stop, run: !./run.sh stop"
+    $PYTHON_CMD predict_live.py
 }
 
+
+# Function to stop the trading bot
 stop_bot() {
     print_header "Stopping Trading Bot"
     
-    # 1. Check for PID file
-    if [ ! -f "$PID_FILE" ]; then
-        print_warning "No PID file found ($PID_FILE)."
-        print_info "Falling back to name search..."
-        # Fallback to your old method if PID file is missing
-        pkill -f "$SCRIPT_NAME" && print_success "Killed by name." || print_warning "No process found."
-        return
-    fi
+    # Try to find and kill running predict_live.py processes
+    print_info "Checking for running bot processes..."
     
-    TARGET_PID=$(cat "$PID_FILE")
+    # Get current script's PID to avoid killing ourselves
+    SCRIPT_PID=$$
     
-    # 2. Check if that specific process is running
-    if ps -p "$TARGET_PID" > /dev/null; then
-        print_info "Found bot process (PID: $TARGET_PID). Stopping..."
-        
-        # Polite kill (SIGTERM)
-        kill "$TARGET_PID"
-        
-        # Wait up to 5 seconds for graceful shutdown
-        for i in {1..5}; do
-            if ! ps -p "$TARGET_PID" > /dev/null; then
-                break
+    # Find and kill predict_live.py processes
+    PREDICT_PIDS=$(pgrep -f "predict_live.py" | grep -v "$SCRIPT_PID" || true)
+    
+    if [ -n "$PREDICT_PIDS" ]; then
+        print_warning "Found running predict_live.py processes: $PREDICT_PIDS"
+        echo "$PREDICT_PIDS" | while read -r pid; do
+            if [ -n "$pid" ] && [ "$pid" != "$SCRIPT_PID" ]; then
+                print_info "Sending TERM signal to process $pid..."
+                kill -TERM "$pid" 2>/dev/null || true
+                
+                # Wait a bit and check if it's still running
+                sleep 2
+                if kill -0 "$pid" 2>/dev/null; then
+                    print_warning "Process $pid still running, sending KILL signal..."
+                    kill -KILL "$pid" 2>/dev/null || true
+                else
+                    print_success "Process $pid stopped successfully"
+                fi
             fi
-            sleep 1
         done
-        
-        # Force kill if still running
-        if ps -p "$TARGET_PID" > /dev/null; then
-            print_warning "Bot refused to stop. Forcing kill..."
-            kill -9 "$TARGET_PID"
-        fi
-        
-        rm "$PID_FILE"
-        print_success "Bot stopped."
     else
-        print_warning "Process $TARGET_PID is not running. Cleaning up stale PID file."
-        rm "$PID_FILE"
+        print_info "No predict_live.py processes found running"
     fi
+    
+    # Also try to kill any python processes running the bot
+    BOT_PIDS=$(pgrep -f "python.*predict_live.py" | grep -v "$SCRIPT_PID" || true)
+    
+    if [ -n "$BOT_PIDS" ]; then
+        print_warning "Found additional bot processes: $BOT_PIDS"
+        echo "$BOT_PIDS" | while read -r pid; do
+            if [ -n "$pid" ] && [ "$pid" != "$SCRIPT_PID" ]; then
+                print_info "Stopping bot process $pid..."
+                kill -TERM "$pid" 2>/dev/null || true
+            fi
+        done
+    fi
+    
+    print_success "Bot stop signal sent!"
+    print_info "The bot should stop within the next few seconds."
+    print_info "To restart the bot, run: ./run.sh start"
+    print_info "To clear the stop flag, run: ./run.sh clear-stop"
 }
-
 
 # Function to clean up generated files
 clean() {
@@ -276,8 +263,6 @@ show_help() {
     echo "  install    - Install all required dependencies"
     echo "  train      - Train the initial model (required before starting bot)"
     echo "  start      - Start the live trading bot"
-    echo "  stop         - Stop the running trading bot"
-    echo "  clear-stop   - Clear the stop flag (allows bot to restart)"
     echo "  logs       - View the last 50 lines of bot logs"
     echo "  stats      - View current trading statistics"
     echo "  clean      - Remove all generated files (models, data, logs)"
@@ -287,7 +272,6 @@ show_help() {
     echo "  ./run.sh install    # First time setup"
     echo "  ./run.sh train      # Train the model"
     echo "  ./run.sh start      # Start trading"
-    echo "  ./run.sh stop         # Stop the bot"
     echo "  ./run.sh logs       # Check what's happening"
     echo ""
     echo "Quick Start:"
@@ -307,9 +291,6 @@ case "${1:-help}" in
         ;;
     start)
         start_bot
-        ;;
-    stop)
-        stop_bot
         ;;
     logs)
         view_logs

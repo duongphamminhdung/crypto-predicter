@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+{% load static %}
+<html class="dark" lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <title>AI Crypto Trading Dashboard</title>
+    <link href="https://fonts.googleapis.com" rel="preconnect"/>
+    <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+    <link href="https://fonts.googleapis.com/css2?family=Spline+Sans:wght@300;400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;700&amp;display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+    <link rel="stylesheet" href="{% static 'trader/output.css' %}">
+</head>
+
+<body class="bg-background-light dark:bg-background-dark min-h-screen font-display text-slate-200 overflow-x-hidden selection:bg-primary selection:text-slate-900">
+    <div class="flex flex-col min-h-screen">
+        <header class="sticky top-0 z-50 flex items-center justify-between whitespace-nowrap border-b border-surface-border bg-background-dark/95 backdrop-blur-md px-6 py-3">
+            <div class="flex items-center gap-4 text-white">
+                <div class="size-8 text-primary flex items-center justify-center">
+                    <span class="material-symbols-outlined text-3xl">token</span>
+                </div>
+                <h2 class="text-white text-lg font-bold leading-tight tracking-wide">MEXC <span class="text-xs font-mono text-primary bg-primary/10 px-2 py-0.5 rounded ml-2">Future-AI</span></h2>
+            </div>
+        </header>
+    
+        <main class="flex-grow p-4 md:p-6 lg:p-8">
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
+                <section class="lg:col-span-3 flex flex-col gap-5 h-full">
+                    <div class="flex items-center gap-2 mb-1">
+                        <span class="material-symbols-outlined text-accent-blue">psychology</span>
+                        <h3 class="text-white text-base font-bold tracking-tight">Crypto News</h3>
+                    </div>
+
+                    <div class="flex flex-col gap-4 overflow-y-auto max-h-[calc(100vh-140px)] pr-2">
+                        {% if twitter_news %}
+                            {% for tweet in twitter_news %}
+                                <div class="p-4 rounded-xl bg-surface-dark border border-surface-border hover:border-surface-border/80 transition-all">
+                                    <div class="flex items-center gap-3 mb-3">
+                                        <div class="bg-center bg-no-repeat bg-cover rounded-full size-10" style='background-image: url("{{ tweet.author_image }}");'></div>
+                                        <div>
+                                            <p class="text-slate-200 text-sm font-semibold leading-tight">{{ tweet.author_name }}</p>
+                                            <p class="text-slate-500 text-xs">@{{ tweet.author_username }}</p>
+                                        </div>
+                                    </div>
+                                    <p class="text-slate-300 text-sm leading-relaxed mb-3">
+                                        {{ tweet.text }}
+                                    </p>
+                                    <div class="sentiment-badge sentiment-{{ tweet.sentiment }}">
+                                        {{ tweet.sentiment|upper }}
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        {% else %}
+                            <div class="p-4 text-center text-slate-400">
+                                <p>📡 Loading crypto news...</p>
+                                <p class="text-xs mt-2 text-slate-500">Check API connection</p>
+                            </div>
+                        {% endif %}
+                    </div>
+                </section>
+    
+                <section class="lg:col-span-6 flex flex-col gap-6">
+                    <div class="flex flex-col gap-3">
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-white text-base font-bold tracking-tight flex items-center gap-2">
+                                <span class="material-symbols-outlined text-primary">candlestick_chart</span>
+                                Live Market Data
+                            </h3>
+                        </div>
+    
+                        <div class="w-full aspect-[16/9] bg-[#131722] rounded-xl border border-surface-border relative overflow-hidden group">
+    
+                            <!-- TradingView Widget BEGIN -->
+                            <div class="tradingview-widget-container" style="height:100%;width:100%">
+                                <div id="tradingview_chart" style="height:100%;width:100%"></div>
+                                <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+                                <script type="text/javascript">
+                                new TradingView.widget(
+                                {
+                                "autosize": true,
+                                "symbol": "MEXC:BTCUSDT.P",
+                                "interval": "1",
+                                "timezone": "Etc/UTC",
+                                "theme": "dark",
+                                "style": "1",
+                                "locale": "en",
+                                "enable_publishing": false,
+                                "allow_symbol_change": true,
+                                "container_id": "tradingview_chart"
+                                }
+                                );
+                                </script>
+                            </div>
+                            <!-- TradingView Widget END -->
+                        </div>
+                    </div>
+    
+                    <div class="flex flex-col gap-3">
+                        <h3 class="text-white text-base font-bold tracking-tight">Live Operations</h3>
+                        <div class="overflow-x-auto rounded-xl border border-surface-border bg-surface-dark">
+                            <table class="w-full text-left text-sm">    
+                                <thead class="bg-slate-800/50 text-slate-400 font-display uppercase text-xs tracking-wider border-b border-surface-border">
+                                    <tr>
+                                        <th class="px-5 py-3 font-semibold">Token Pair</th>
+                                        <th class="px-5 py-3 font-semibold">Size (BTC)</th>
+                                        <th class="px-5 py-3 font-semibold">Entry Price</th>
+                                        <th class="px-5 py-3 font-semibold">Mark Price</th>
+                                        <th class="px-5 py-3 font-semibold">TP / SL</th>
+                                        <th class="px-5 py-3 font-semibold">Bot Decision</th>
+                                        <th class="px-5 py-3 font-semibold">Unrealized P&amp;L</th>
+                                    </tr>
+                                </thead>
+    
+                                <tbody class="divide-y divide-surface-border font-mono text-slate-200">
+                                    {% for trade in active_trades %}
+                                    <tr class="hover:bg-white/5 transition-colors">
+                                        <td class="px-5 py-4 flex items-center gap-2">
+                                            <div class="size-6 rounded-full bg-orange-500 flex items-center justify-center text-[10px] font-bold text-white">₿</div>
+                                            <span class="font-bold">BTCUSDT</span>
+                                        </td>
+                                        
+                                        <td class="px-5 py-4 text-slate-400">{{ trade.quantity|floatformat:4 }}</td>
+                                        <td class="px-5 py-4 text-slate-400">${{ trade.entry_price|floatformat:2 }}</td>
+                                        <td class="px-5 py-4 text-slate-400">${{ trade.current_price|floatformat:1 }}</td>
+
+                                        <td>
+                                            <span class="px-5 py-4 text-green">{{ trade.tp|floatformat:1 }}</span> / 
+                                            <span class="px-5 py-4 text-red">{{ trade.sl|floatformat:1 }}</span>
+                                        </td>
+                                        
+                                        <!--<td class="{% if trade.side == 'BUY' %}text-primary{% else %}text-red-500{% endif %} font-bold">
+                                            {{ trade.side }}
+                                        </td>-->
+                                        <td class="px-5 py-4 text-center">
+                                            <span class="{% if trade.side == 'BUY' %}text-primary bg-primary/10{% else %}text-red-500 bg-red-500{% endif %} px-3 py-1 rounded-full text-xs font-bold tracking-wide">{{ trade.side|upper }}</span>
+                                        </td>
+    
+                                        <td class="px-5 py-4 text-right {% if trade.unrealized_pnl_percentage >= 0 %}text-primary{% else %}text-red-500{% endif %} font-bold">
+                                            {{ trade.unrealized_pnl_usdt|floatformat:2 }} USDT <br>
+                                            <small>({{ trade.unrealized_pnl_percentage|floatformat:2 }}%)</small>
+                                        </td>
+                                    </tr>
+                                    {% empty %}
+                                    <tr>
+                                        <td colspan="4" class="px-5 py-4 text-center text-slate-400">No active positions</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+    
+                    <div class="mt-auto bg-surface-dark rounded-xl border border-surface-border p-6 shadow-lg">
+                        <div class="flex items-center justify-between mb-6 pb-4 border-b border-surface-border/50">
+                            <h3 class="text-white text-base font-bold tracking-tight">Bot Control Panel</h3>
+    
+                            <button id="status-button" class="flex items-center justify-between gap-4 bg-background-dark border border-primary/50 rounded-lg p-1.5 pr-4 cursor-pointer group transition-all hover:bg-primary/5 hover:border-primary">
+                                <div class="bg-primary text-background-dark rounded px-3 py-1.5 text-xs font-bold uppercase tracking-wider neon-shadow">Status</div>
+
+                                <div class="flex items-center gap-2">
+                                    <span id="status-text" class="text-primary font-bold text-xs tracking-wide group-hover:text-white transition-colors">
+                                        {% if bot_status == 'running' %}ACTIVE{% elif bot_status == 'stopped' %}STOPPED{% else %}UNKNOWN{% endif %}
+                                    </span>
+
+                                    <span class="relative flex h-2.5 w-2.5">
+                                        <span id="status-pulse" class="animate-ping absolute inline-flex h-full w-full rounded-full {% if bot_status == 'running' %}bg-primary{% else %}bg-red-500{% endif %} opacity-75"></span>
+                                        <span id="status-dot" class="relative inline-flex rounded-full h-2.5 w-2.5 {% if bot_status == 'running' %}bg-primary{% else %}bg-red-500{% endif %}"></span>
+                                    </span>
+                                </div>
+                        </div>
+
+                        <div class="space-y-6">
+                            <div>
+                                <h4 class="text-slate-500 text-xs font-bold uppercase tracking-wider mb-3 flex items-center gap-2">
+                                    <span class="material-symbols-outlined text-sm">tune</span> Risk &amp; Trade Settings
+                                </h4>
+    
+                                <div class="grid grid-cols-2 lg:grid-cols-3 gap-4">
+                                    <div>
+                                        <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Confidence (Trade)</label>
+    
+                                        <div class="relative">
+                                            <input id="confidence-trade" class="w-full bg-background-dark border border-surface-border rounded-lg py-2 pl-3 pr-8 text-white font-mono text-sm focus:ring-1 focus:ring-primary focus:border-primary transition-all" type="number" value="70" step="0.01" min="0" max="1"/>
+
+                                            <span class="absolute right-3 top-2 text-slate-500 font-mono text-xs">%</span>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Confidence (Test)</label>
+
+                                        <div class="relative">
+                                            <input id="confidence-test" class="w-full bg-background-dark border border-surface-border rounded-lg py-2 pl-3 pr-8 text-white font-mono text-sm focus:ring-1 focus:ring-primary focus:border-primary transition-all" type="number" value="70" step="0.01" min="0" max="1"/>
+
+                                            <span class="absolute right-3 top-2 text-slate-500 font-mono text-xs">&lt;%</span>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Max Risk</label>
+
+                                        <div class="relative">
+                                            <input id="max-risk" class="w-full bg-background-dark border border-surface-border rounded-lg py-2 pl-3 pr-8 text-white font-mono text-sm focus:ring-1 focus:ring-primary focus:border-primary transition-all" type="number" value="10" step="0.01" min="0" max="100"/>
+
+                                            <span class="absolute right-3 top-2 text-slate-500 font-mono text-xs">%</span>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Max Leverage</label>
+
+                                        <div class="relative">
+                                            <input id="max-leverage" class="w-full bg-background-dark border border-surface-border rounded-lg py-2 pl-3 pr-8 text-white font-mono text-sm focus:ring-1 focus:ring-primary focus:border-primary transition-all" type="number" value="75" min="1" max="125"/>
+                                        </div>
+                                    </div>
+    
+                                    <div>
+                                        <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Stop Loss</label>
+    
+                                        <div class="relative">
+                                            <input class="w-full bg-background-dark border border-surface-border rounded-lg py-2 pl-3 pr-8 text-white font-mono text-sm focus:ring-1 focus:ring-primary focus:border-primary transition-all" type="number" value="2.5"/>
+    
+                                            <span class="absolute right-3 top-2 text-slate-500 font-mono text-xs">%</span>
+                                        </div>
+                                    </div>
+    
+                                    <div>
+                                        <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Take Profit</label>
+    
+                                        <div class="relative">
+                                            <input class="w-full bg-background-dark border border-surface-border rounded-lg py-2 pl-3 pr-8 text-white font-mono 
+                                            text-sm focus:ring-1 focus:ring-primary focus:border-primary transition-all" type="number" value="5.0"/>
+    
+                                            <span class="absolute right-3 top-2 text-slate-500 font-mono text-xs">%</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-surface-border/50">
+                                <div>
+                                    <h4 class="text-slate-500 text-xs font-bold uppercase tracking-wider mb-3 flex items-center gap-2">
+                                        <span class="material-symbols-outlined text-sm">timer_off</span> Early Stop Parameters
+                                    </h4>
+    
+                                    <div class="space-y-4">
+                                        <div>
+                                            <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Max Time in Red</label>
+    
+                                            <div class="relative">
+                                                <input id="max-time-red" class="w-full bg-background-dark border border-surface-border rounded-lg py-2 pl-3 pr-12 text-white font-mono text-sm focus:ring-1 focus:ring-primary focus:border-primary transition-all" type="number" value="120"/>
+    
+                                                <span class="absolute right-3 top-2 text-slate-500 font-mono text-xs">min</span>
+                                            </div>
+                                        </div>
+    
+                                        <div class="flex items-center justify-between bg-background-dark border border-surface-border rounded-lg p-3">
+                                            <div>
+                                                <span class="block text-slate-300 text-xs font-bold uppercase tracking-wider">Opposite Signal</span>
+    
+                                                <span class="text-[10px] text-slate-500">Close if model flips direction</span>
+                                            </div>
+    
+                                            <label class="relative inline-flex items-center cursor-pointer">
+                                                <input id="opposite-signal" checked="" class="sr-only peer" type="checkbox" value=""/>
+    
+                                                <div class="w-9 h-5 bg-surface-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+    
+                                <div>
+                                    <h4 class="text-slate-500 text-xs font-bold uppercase tracking-wider mb-3 flex items-center gap-2">
+                                        <span class="material-symbols-outlined text-sm">model_training</span> Model Refinement
+                                    </h4>
+    
+                                    <div>
+                                        <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Retrain Interval</label>
+
+                                        <div class="relative">
+                                            <input id="retrain-interval" class="w-full bg-background-dark border border-surface-border rounded-lg py-2 pl-3 pr-12 text-white font-mono text-sm focus:ring-1 focus:ring-primary focus:border-primary transition-all" type="number" value="3600"/>
+    
+                                            <span class="absolute right-3 top-2 text-slate-500 font-mono text-xs">sec</span>
+                                        </div>
+    
+                                        <p class="mt-2 text-[10px] text-slate-500 leading-relaxed">
+                                            Automatically triggers model refinement and partial fitting on new data batches every 3600 seconds.
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Save Settings Button -->
+                            <div class="mt-6 pt-4 border-t border-surface-border/50">
+                                <button id="save-settings-btn" class="w-full bg-primary hover:bg-primary/80 text-background-dark font-bold py-3 px-4 rounded-lg transition-all duration-200 flex items-center justify-center gap-2">
+                                    <span class="material-symbols-outlined text-sm">save</span>
+                                    Save Settings
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+    
+                <section class="lg:col-span-3 flex flex-col gap-6">
+                    <div>
+                        <div class="flex items-center gap-2 mb-3">
+                            <span class="material-symbols-outlined text-purple-400">monitoring</span>
+                            <h3 class="text-white text-base font-bold tracking-tight">Bot Health</h3>
+                            <span class="text-slate-400" id = "dateDailyStats">Date:</span> {{ daily_stats.date }}
+                        </div>
+    
+                        <div class="grid grid-cols-2 gap-3">
+                            <div class="bg-surface-dark border border-surface-border p-4 rounded-xl flex flex-col items-center justify-center gap-1">
+                                <span class="text-slate-400 text-xs font-medium uppercase tracking-wider">Win Rate</span>
+                                <span class="{% if daily_stats.win_rate_pct >= 50 %}text-green-400{% else %}text-red-400{% endif %}" id = "winRateDailyStats">
+                                    {{ daily_stats.win_rate_pct|floatformat:1 }}%
+                                </span>
+                            </div>
+    
+                            <div class="bg-surface-dark border border-surface-border p-4 rounded-xl flex flex-col items-center justify-center gap-1">
+                                <span class="text-slate-400 text-xs font-medium uppercase tracking-wider">Total P&L</span>
+                                <span class="{% if daily_stats.total_profit_usdt >= 0 %}text-green-400{% else %}text-red-400{% endif %}" id = "profitDailyStats">
+                                    ${{ daily_stats.total_profit_usdt|floatformat:2 }}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+    
+                    <div class="flex flex-col flex-1 h-full min-h-[300px]">
+                        <div class="flex items-center gap-2 mb-3">
+                            <span class="material-symbols-outlined text-slate-400">history</span>
+                            <h3 class="text-white text-base font-bold tracking-tight">Trade History</h3>
+                        </div>
+    
+                        <div class="bg-surface-dark rounded-xl border border-surface-border flex-1 overflow-hidden flex flex-col">
+                            <div id="trade-history-container" class="overflow-y-auto p-2">
+                                {% for trade in trades_history %}
+                                <div class="p-3 border-b border-surface-border/50 last:border-0 hover:bg-white/5 transition-colors rounded-lg cursor-default">
+                                    <div class="flex justify-between items-start mb-1">
+                                        <span class="font-bold text-sm text-slate-200">{{ trade.symbol }}</span>
+                                        <span class="font-mono text-sm font-bold {% if trade.pl_in_dollar >= 0 %}text-primary{% else %}text-red-500{% endif %}">{{ trade.pl_in_dollar|floatformat:2 }} $</span>
+                                    </div>
+    
+                                    <div class="flex justify-between items-center text-xs text-slate-500 font-mono">
+                                        <span>Exit: ${{ trade.entry_price|floatformat:1 }}</span>
+                                        <span>{{ trade.time_stamp|slice:"11:19" }}</span>
+                                    </div>
+                                </div>
+                                {% empty %}
+                                <div class="p-3 text-center text-slate-400">No history yet</div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Bot status toggle functionality
+        document.getElementById('status-button').addEventListener('click', async function() {
+            const button = this;
+            const statusText = document.getElementById('status-text');
+            const statusPulse = document.getElementById('status-pulse');
+            const statusDot = document.getElementById('status-dot');
+
+            // Disable button during request
+            button.disabled = true;
+            button.style.opacity = '0.6';
+
+            try {
+                const response = await fetch('/toggle-bot/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]')?.value || ''
+                    },
+                    body: 'action=toggle'
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    // Update status display
+                    if (data.status === 'running') {
+                        statusText.textContent = 'ACTIVE';
+                        statusPulse.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75';
+                        statusDot.className = 'relative inline-flex rounded-full h-2.5 w-2.5 bg-primary';
+                    } else if (data.status === 'stopped') {
+                        statusText.textContent = 'STOPPED';
+                        statusPulse.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75';
+                        statusDot.className = 'relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500';
+                    }
+
+                    // Show success message
+                    showNotification(data.message || 'Bot status updated successfully', 'success');
+                } else {
+                    showNotification(data.message || 'Failed to toggle bot status', 'error');
+                }
+
+            } catch (error) {
+                console.error('Error toggling bot:', error);
+                showNotification('Network error: Could not reach Colab API', 'error');
+            } finally {
+                // Re-enable button
+                button.disabled = false;
+                button.style.opacity = '1';
+            }
+        });
+
+        // Notification system
+        function showNotification(message, type = 'info') {
+            // Remove existing notifications
+            const existing = document.querySelector('.notification');
+            if (existing) existing.remove();
+
+            // Create notification element
+            const notification = document.createElement('div');
+            notification.className = `notification fixed top-4 right-4 z-50 px-4 py-2 rounded-lg font-medium text-sm ${
+                type === 'success' ? 'bg-green-500 text-white' :
+                type === 'error' ? 'bg-red-500 text-white' :
+                'bg-blue-500 text-white'
+            }`;
+            notification.textContent = message;
+
+            // Add to page
+            document.body.appendChild(notification);
+
+            // Auto remove after 3 seconds
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.remove();
+                }
+            }, 3000);
+        }
+
+        // Auto-refresh status every 30 seconds
+        setInterval(async function() {
+            try {
+                const response = await fetch('/bot-status/');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success) {
+                        updateStatusDisplay(data.status);
+                    }
+                }
+            } catch (error) {
+                console.error('Error refreshing status:', error);
+            }
+        }, 30000);
+
+        // Auto-refresh trading data every 30 seconds
+        setInterval(async function() {
+            try {
+                const response = await fetch('/api/trading-data/');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success) {
+                        updateTradingData(data.trading_data);
+                    }
+                }
+            } catch (error) {
+                console.error('Error refreshing trading data:', error);
+            }
+        }, 30000);
+
+        function updateTradingData(tradingData) {
+            // Update active trades table
+            updateActiveTradesTable(tradingData.active_trades || []);
+            
+            updateTradeHistoryTable(tradingData.trades_history || []);
+
+            // Update daily stats
+            updateDailyStats(tradingData.daily_stats || {});
+        }
+
+        function updateActiveTradesTable(activeTrades) {
+            const tbody = document.querySelector('tbody.divide-y');
+            if (!tbody) return;
+
+            // Clear existing rows (except the "no active positions" row if it exists)
+            const existingRows = tbody.querySelectorAll('tr');
+            existingRows.forEach(row => {
+                if (!row.textContent.includes('No active positions')) {
+                    row.remove();
+                }
+            });
+
+            if (activeTrades.length === 0) {
+                // Show "no active positions" message
+                const noPositionsRow = tbody.querySelector('tr');
+                if (!noPositionsRow || !noPositionsRow.textContent.includes('No active positions')) {
+                    tbody.innerHTML = '<tr><td colspan="7" class="px-5 py-4 text-center text-slate-400">No active positions</td></tr>';
+                }
+                return;
+            }
+
+            // Remove "no active positions" row if it exists
+            const noPositionsRow = tbody.querySelector('tr');
+            if (noPositionsRow && noPositionsRow.textContent.includes('No active positions')) {
+                noPositionsRow.remove();
+            }
+
+            // Add new trade rows
+            activeTrades.forEach(trade => {
+                const row = document.createElement('tr');
+                row.className = 'hover:bg-white/5 transition-colors';
+                
+                const pnlClass = (trade.confidence || 0) >= 0 ? 'text-primary' : 'text-red-500';
+                
+                row.innerHTML = `
+                    <td class="px-5 py-4 flex items-center gap-2">
+                        <div class="size-6 rounded-full bg-orange-500 flex items-center justify-center text-[10px] font-bold text-white">₿</div>
+                        <span class="font-bold">BTCUSDT</span>
+                    </td>
+                    <td class="px-5 py-4 text-slate-400">${(trade.quantity || 0).toFixed(4)}</td>
+                    <td class="px-5 py-4 text-slate-400">$${(trade.entry_price || 0).toFixed(2)}</td>
+                    <td class="px-5 py-4 text-slate-400">$${(trade.current_price || 0).toFixed(1)}</td>
+                    <td>
+                        <span class="px-5 py-4 text-green">${(trade.tp || 0).toFixed(1)}</span> / 
+                        <span class="px-5 py-4 text-red">${(trade.sl || 0).toFixed(1)}</span>
+                    </td>
+                    <td class="px-5 py-4 text-center">
+                        <span class="${trade.side === 'BUY' ? 'text-primary bg-primary/10' : 'text-red-500 bg-red-500'} px-3 py-1 rounded-full text-xs font-bold tracking-wide">${(trade.side || 'UNK').toUpperCase()}</span>
+                    </td>
+                    <td class="px-5 py-4 text-right ${pnlClass} font-bold">
+                        ${(trade.unrealized_pnl_usdt || 0).toFixed(2)} USDT <br>
+                        <small>(${(trade.unrealized_pnl_percentage || 0).toFixed(2)}%)</small>
+                    </td>
+                `;
+                
+                tbody.appendChild(row);
+            });
+        }
+
+        function updateTradeHistoryTable(tradesHistory) {
+            const container = document.getElementById('trade-history-container');
+            if (!container) return;
+
+            // Clear existing content
+            container.innerHTML = '';
+
+            if (tradesHistory.length === 0) {
+                container.innerHTML = '<div class="p-3 text-center text-slate-400">No history yet</div>';
+                return;
+            }
+
+            // Add new trade history entries
+            tradesHistory.forEach(trade => {
+                const tradeDiv = document.createElement('div');
+                tradeDiv.className = 'p-3 border-b border-surface-border/50 last:border-0 hover:bg-white/5 transition-colors rounded-lg cursor-default';
+                
+                tradeDiv.innerHTML = `
+                    <div class="flex justify-between items-start mb-1">
+                        <span class="font-bold text-sm text-slate-200">${trade.symbol || 'UNK'}</span>
+                        <span class="font-mono text-sm font-bold ${ (trade.pl_in_dollar || 0) >= 0 ? 'text-primary' : 'text-red-500' }">${(trade.pl_in_dollar || 0).toFixed(2)} $</span>
+                    </div>
+                    <div class="flex justify-between items-center text-xs text-slate-500 font-mono">
+                        <span>Exit: $${(trade.entry_price || 0).toFixed(1)}</span>
+                        <span>${(trade.time_stamp || '').slice(11,19)}</span>
+                    </div>
+                `;
+                
+                container.appendChild(tradeDiv);
+            });
+        }
+
+        function updateDailyStats(dailyStats) {
+            console.log('Updating daily stats:', dailyStats);
+            // Update date
+            const dateElement = document.getElementById('dateDailyStats');
+            if (dateElement && dateElement.textContent.includes('Date:')) {
+                dateElement.nextSibling.textContent = dailyStats.date || 'N/A';
+            }
+            
+            // Update win rate
+            const winRateElement = document.getElementById('winRateDailyStats');
+            if (winRateElement) {
+                const winRate = dailyStats.win_rate_pct || 0;
+                winRateElement.textContent = winRate.toFixed(1) + '%';
+                winRateElement.className = winRate >= 50 ? 'text-green-400' : 'text-red-400';
+            }
+            
+            // Update total profit
+            const profitElement = document.getElementById('profitDailyStats');
+            if (profitElement) {
+                const profit = dailyStats.total_profit_usdt || 0;
+                profitElement.textContent = '$' + profit.toFixed(2);
+                profitElement.className = profit >= 0 ? 'text-green-400' : 'text-red-400';
+            }
+        }
+
+        function updateStatusDisplay(status) {
+            const statusText = document.getElementById('status-text');
+            const statusPulse = document.getElementById('status-pulse');
+            const statusDot = document.getElementById('status-dot');
+
+            if (status === 'running') {
+                statusText.textContent = 'ACTIVE';
+                statusPulse.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75';
+                statusDot.className = 'relative inline-flex rounded-full h-2.5 w-2.5 bg-primary';
+            } else if (status === 'stopped') {
+                statusText.textContent = 'STOPPED';
+                statusPulse.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75';
+                statusDot.className = 'relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500';
+            }
+        }
+
+        // Save settings functionality
+        document.getElementById('save-settings-btn').addEventListener('click', async function() {
+            const button = this;
+            const originalText = button.innerHTML;
+
+            // Disable button during request
+            button.disabled = true;
+            button.innerHTML = '<span class="material-symbols-outlined text-sm animate-spin">refresh</span> Saving...';
+
+            try {
+                // Collect values from input fields
+                const settings = {
+                    confidence_trade: parseFloat(document.getElementById('confidence-trade').value) / 100, // Convert % to decimal
+                    confidence_test: parseFloat(document.getElementById('confidence-test').value) / 100,   // Convert % to decimal
+                    max_risk: parseFloat(document.getElementById('max-risk').value) / 100,               // Convert % to decimal
+                    max_leverage: parseInt(document.getElementById('max-leverage').value),
+                    max_time_red: parseInt(document.getElementById('max-time-red').value),
+                    opposite_signal: document.getElementById('opposite-signal').checked,
+                    retrain_interval: parseInt(document.getElementById('retrain-interval').value)
+                };
+
+                // Validate inputs
+                if (settings.confidence_trade < 0 || settings.confidence_trade > 1 ||
+                    settings.confidence_test < 0 || settings.confidence_test > 1 ||
+                    settings.max_risk < 0 || settings.max_risk > 1 ||
+                    settings.max_leverage < 1 || settings.max_leverage > 125 ||
+                    settings.max_time_red < 1 || settings.max_time_red > 1440 ||
+                    settings.retrain_interval < 60 || settings.retrain_interval > 86400) {
+                    throw new Error('Invalid parameter values');
+                }
+
+                // Send to Colab API
+                const response = await fetch('/update-trading-params/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]')?.value || ''
+                    },
+                    body: JSON.stringify(settings)
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showNotification('✅ Trading parameters updated successfully!', 'success');
+                } else {
+                    throw new Error(data.message || 'Failed to update parameters');
+                }
+
+            } catch (error) {
+                console.error('Error saving settings:', error);
+                showNotification('❌ Failed to update settings: ' + error.message, 'error');
+            } finally {
+                // Re-enable button
+                button.disabled = false;
+                button.innerHTML = originalText;
+            }
+        });
+    </script>
+</body></html>

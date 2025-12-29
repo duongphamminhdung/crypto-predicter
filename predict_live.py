@@ -675,7 +675,7 @@ def main():
                         
                         if entry_worse:
                             # Entry is worse, but check if confidence is high enough to override
-                            if confidence > = 0.9 and confidence > = existing_confidence:
+                            if confidence >= 0.9 and confidence >= existing_confidence:
                                 # High confidence and higher than existing - allow trade
                                 logging.info(f"✅ Overriding worse entry: Confidence {confidence:.2f} >= 0.9 and higher than existing {existing_confidence:.2f}")
                                 should_skip = False

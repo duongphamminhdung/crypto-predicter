@@ -121,3 +121,58 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# Twitter API Configuration
+TWITTER_BEARER_TOKEN = "AAAAAAAAAAAAAAAAAAAAAGZ%2F5wEAAAAALUQhYeXL2HJ5jyOtZNKdSHa30kc%3DprHQ1MIK5ZV3fqDqvBzeLWPm9H0nF2Ru0AL75EG5ukHNd9q9in"
+# Or for v1.1 API:
+TWITTER_API_KEY = 'YOUR_API_KEY'
+TWITTER_API_SECRET = 'YOUR_API_SECRET'
+TWITTER_ACCESS_TOKEN = ''
+TWITTER_ACCESS_SECRET = ''
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {asctime} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple'
+        },
+        'file': {
+            'class': 'logging.FileHandler',
+            'filename': 'twitter_errors.log',
+            'formatter': 'verbose'
+        },
+    },
+    'root': {
+        'handlers': ['console', 'file'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'trader.twitter_service': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+    },
+}
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'crypto-predicter-cache',
+        'OPTIONS': {
+            'MAX_ENTRIES': 1000
+        }
+    }
+}

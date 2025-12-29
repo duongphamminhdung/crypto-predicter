@@ -72,11 +72,158 @@
             display: flex;
             flex: 1;
             height: calc(100vh - var(--header-height));
+            gap: 0;
+        }
+
+        /* Twitter News Sidebar */
+        .twitter-sidebar {
+            width: 280px;
+            background-color: var(--panel-color);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            min-width: 250px;
+        }
+
+        .twitter-header {
+            padding: 12px 15px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-primary);
+        }
+
+        .twitter-feed {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .tweet-item {
+            padding: 12px 12px;
+            border-bottom: 1px solid var(--border-color);
+            cursor: pointer;
+            transition: background-color 0.2s;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .tweet-item:hover {
+            background-color: rgba(46, 189, 133, 0.08);
+        }
+
+        .tweet-header-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tweet-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background-color: var(--border-color);
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+
+        .tweet-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .tweet-author-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .author-name {
+            font-weight: 600;
+            font-size: 0.8rem;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .verified-badge {
+            color: #1da1f2;
+            font-size: 0.75rem;
+        }
+
+        .author-username {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .tweet-text {
+            font-size: 0.78rem;
+            line-height: 1.35;
+            color: var(--text-primary);
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            word-break: break-word;
+        }
+
+        .tweet-meta {
+            display: flex;
+            gap: 10px;
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+        }
+
+        .tweet-meta span {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }
+
+        .sentiment-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 0.65rem;
+            font-weight: 600;
+            width: fit-content;
+            text-transform: uppercase;
+        }
+
+        .sentiment-positive {
+            background-color: rgba(14, 203, 129, 0.25);
+            color: var(--green);
+            border: 0.5px solid var(--green);
+        }
+
+        .sentiment-negative {
+            background-color: rgba(246, 70, 93, 0.25);
+            color: var(--red);
+            border: 0.5px solid var(--red);
+        }
+
+        .sentiment-neutral {
+            background-color: rgba(132, 142, 156, 0.25);
+            color: var(--text-secondary);
+            border: 0.5px solid var(--text-secondary);
+        }
+
+        .no-news {
+            padding: 20px;
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.8rem;
         }
 
         /* Left Column: Chart & Active Trades */
         .left-col {
-            flex: 3;
+            flex: 1;
             display: flex;
             flex-direction: column;
             border-right: 1px solid var(--border-color);
@@ -175,6 +322,16 @@
             background-color: var(--green);
             color: #000;
         }
+
+        /* Responsive - hide Twitter on very small screens */
+        @media (max-width: 1200px) {
+            .twitter-sidebar {
+                width: 220px;
+            }
+            .tweet-text {
+                -webkit-line-clamp: 1;
+            }
+        }
     </style>
 </head>
 <body>
@@ -206,6 +363,52 @@
     </header>
 
     <div class="main-container">
+        
+        <!-- Twitter News Sidebar (NEW) -->
+        <div class="twitter-sidebar">
+            <div class="twitter-header">📰 Crypto News</div>
+            <div class="twitter-feed">
+                {% if twitter_news %}
+                    {% for tweet in twitter_news %}
+                        <div class="tweet-item" onclick="window.open('{{ tweet.url }}', '_blank')" title="Click to open tweet">
+                            <div class="tweet-header-row">
+                                <div class="tweet-avatar">
+                                    {% if tweet.author_image %}
+                                        <img src="{{ tweet.author_image }}" alt="{{ tweet.author_name }}">
+                                    {% else %}
+                                        <div style="background-color: var(--border-color); width: 100%; height: 100%;"></div>
+                                    {% endif %}
+                                </div>
+                                <div class="tweet-author-info">
+                                    <div class="author-name">
+                                        {{ tweet.author_name|truncatewords:2 }}
+                                        {% if tweet.author_verified %}
+                                            <span class="verified-badge">✓</span>
+                                        {% endif %}
+                                    </div>
+                                    <div class="author-username">@{{ tweet.author_username }}</div>
+                                </div>
+                            </div>
+                            <div class="tweet-text">{{ tweet.text }}</div>
+                            <div class="tweet-meta">
+                                <span>❤️ {{ tweet.likes|default:0 }}</span>
+                                <span>🔄 {{ tweet.retweets|default:0 }}</span>
+                                <span>💬 {{ tweet.replies|default:0 }}</span>
+                            </div>
+                            <div class="sentiment-badge sentiment-{{ tweet.sentiment }}">
+                                {{ tweet.sentiment|upper }}
+                            </div>
+                        </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="no-news">
+                        <p>📡 Loading crypto news...</p>
+                        <p style="font-size: 0.7rem; margin-top: 8px; color: var(--text-secondary);">Check API connection</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+
         <!-- Left Column -->
         <div class="left-col">
             <!-- TradingView Chart -->
@@ -262,7 +465,7 @@
                                 </td>
                                 <td>{{ trade.quantity|floatformat:4 }}</td>
                                 <td>{{ trade.entry_price|floatformat:1 }}</td>
-                                <td>{{ trade.current_price|floatformat:1 }}</td> <!-- Note: View might need to pass current price or handle it -->
+                                <td>{{ trade.current_price|floatformat:1 }}</td>
                                 <td>
                                     <span class="text-green">{{ trade.tp|floatformat:1 }}</span> / 
                                     <span class="text-red">{{ trade.sl|floatformat:1 }}</span>
@@ -339,10 +542,12 @@
     
     <script>
         // Simple auto-refresh every 30 seconds to get new data
-        setTimeout(function(){
+        /*setTimeout(function(){
            window.location.reload();
-        }, 30000);
+        }, 30000);*/
     </script>
-</body>
+
+
+</html></body></body>
 </html>
 

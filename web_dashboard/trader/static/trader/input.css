@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: #0f172a;
+}
+::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+}
+.neon-shadow {
+    box-shadow: 0 0 10px rgba(48, 232, 122, 0.2);
+}
+.sentiment-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    width: fit-content;
+    text-transform: uppercase;
+}
+.sentiment-positive {
+    background-color: rgba(14, 203, 129, 0.25);
+    color: #0ecb81;
+    border: 0.5px solid #0ecb81;
+}
+.sentiment-negative {
+    background-color: rgba(246, 70, 93, 0.25);
+    color: #f6465d;
+    border: 0.5px solid #f6465d;
+}
+.sentiment-neutral {
+    background-color: rgba(132, 142, 156, 0.25);
+    color: #848e9c;
+    border: 0.5px solid #848e9c;
+}

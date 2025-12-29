@@ -107,6 +107,110 @@ The `run.sh` script helps you manage the bot:
 
 ---
 
+## 🔧 Threshold Configuration
+
+### Modifying Trading Parameters
+
+The bot uses several key thresholds that control trading behavior:
+
+- **CONFIDENCE_THRESHOLD_TRADE** (default: 0.70): Minimum confidence required to execute live trades
+- **CONFIDENCE_THRESHOLD_TEST** (default: 0.70): Minimum confidence for shadow mode testing
+- **MAX_POSITION_RISK** (default: 0.10): Maximum risk per position (10% of account)
+- **MAX_LEVERAGE** (default: 75): Maximum leverage allowed
+
+### For Local Development
+
+Use the interactive threshold modifier:
+
+```bash
+python modify_thresholds.py
+```
+
+This will show current values and allow you to update them interactively.
+
+### For Colab Deployment
+
+When running the model on Google Colab, use these steps to update thresholds:
+
+1. **Modify locally first:**
+   ```bash
+   python modify_thresholds.py
+   ```
+
+2. **Sync to Google Drive:**
+   ```bash
+   python update_colab_thresholds.py
+   ```
+
+3. **Restart Colab runtime** to load the new thresholds.
+
+### Prerequisites for Colab Sync
+
+1. **Create a Google Cloud Project** and enable the Drive API
+2. **Create a Service Account** and download the JSON key file
+3. **Share your Colab folder** with the service account email
+4. **Update the script** with your file IDs:
+   - Set `SERVICE_ACCOUNT_FILE` to your service account JSON path
+   - Set `DRIVE_FILE_ID` to your `predict_live.py` file ID from Drive URL
+
+The sync script will show a diff of changes before uploading, ensuring you don't accidentally overwrite important modifications.
+
+### Colab Bot Control
+
+The web dashboard now includes remote bot control capabilities. You can start/stop the bot running on Colab directly from the dashboard.
+
+#### Setup Colab API
+
+1. **Open your Colab notebook** (`colab_prediction_api.ipynb`)
+
+2. **Run the cells in order** (Drive mount, pip installs, cd to directory)
+
+3. **The API will start automatically** and show your ngrok URL:
+   ```
+   🚀 API is running at: https://abc123.ngrok.io
+   🤖 Bot control: https://abc123.ngrok.io/toggle_bot
+   📊 Status: https://abc123.ngrok.io/bot_status
+   ```
+
+4. **Copy the ngrok URL** and update your Django `views.py`:
+   ```python
+   # Replace in get_prediction(), get_trading_data(), toggle_bot_status(), get_bot_status()
+   colab_api_url = 'https://abc123.ngrok.io/predict'  # Your actual URL
+   ```
+
+5. **Start your Django server**:
+   ```bash
+   cd web_dashboard && python manage.py runserver
+   ```
+
+6. **Test the connection** by visiting your dashboard - the status button should now control the Colab bot!
+
+#### Colab API Endpoints
+
+Your Colab notebook exposes these endpoints:
+- `GET /bot_status` - Check if bot is running/stopped
+- `POST /toggle_bot` - Start/stop the bot remotely
+- `GET /trading_data` - Fetch trades and statistics
+- `GET /predict` - Get current model prediction
+- `GET /health` - API health check
+
+#### Integration Notes
+
+- **Bot Logic**: Replace the placeholder `bot_main_loop()` with your actual `predict_live.py` logic
+- **Model Loading**: Update the `predict()` endpoint to load your trained model
+- **Data Paths**: The API reads from your Google Drive JSON files automatically
+- **Threading**: Bot runs in background thread, API handles requests concurrently
+
+#### Dashboard Features
+
+- **Status Button**: Click to toggle bot on/off
+- **Real-time Status**: Shows current bot state (ACTIVE/STOPPED)
+- **Visual Indicators**: Green dot for running, red for stopped
+- **Auto-refresh**: Status updates every 30 seconds
+- **Notifications**: Success/error messages for actions
+
+---
+
 ## ⚠️ Disclaimer
 
 **USE AT YOUR OWN RISK.**
