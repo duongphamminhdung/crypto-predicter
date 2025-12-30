@@ -101,13 +101,13 @@
                             <table class="w-full text-left text-sm">    
                                 <thead class="bg-slate-800/50 text-slate-400 font-display uppercase text-xs tracking-wider border-b border-surface-border">
                                     <tr>
-                                        <th class="px-5 py-3 font-semibold">Token Pair</th>
-                                        <th class="px-5 py-3 font-semibold">Size (BTC)</th>
-                                        <th class="px-5 py-3 font-semibold">Entry Price</th>
-                                        <th class="px-5 py-3 font-semibold">Mark Price</th>
-                                        <th class="px-5 py-3 font-semibold">TP / SL</th>
-                                        <th class="px-5 py-3 font-semibold">Bot Decision</th>
-                                        <th class="px-5 py-3 font-semibold">Unrealized P&amp;L</th>
+                                        <th class="px-5 py-3 font-semibold text-left">Token Pair</th>
+                                        <th class="px-5 py-3 font-semibold text-center">Size (BTC)</th>
+                                        <th class="px-5 py-3 font-semibold text-center">Entry Price</th>
+                                        <th class="px-5 py-3 font-semibold text-center">Mark Price</th>
+                                        <th class="px-5 py-3 font-semibold text-center">TP / SL</th>
+                                        <th class="px-5 py-3 font-semibold text-center">Bot Decision</th>
+                                        <th class="px-5 py-3 font-semibold text-right">Unrealized P&amp;L</th>
                                     </tr>
                                 </thead>
     
@@ -122,10 +122,8 @@
                                         <td class="px-5 py-4 text-slate-400">{{ trade.quantity|floatformat:4 }}</td>
                                         <td class="px-5 py-4 text-slate-400">${{ trade.entry_price|floatformat:2 }}</td>
                                         <td class="px-5 py-4 text-slate-400">${{ trade.current_price|floatformat:1 }}</td>
-
-                                        <td>
-                                            <span class="px-5 py-4 text-green">{{ trade.tp|floatformat:1 }}</span> / 
-                                            <span class="px-5 py-4 text-red">{{ trade.sl|floatformat:1 }}</span>
+                                        <td class="px-5 py-4">
+                                            <span class="text-primary">{{ trade.tp|floatformat:1 }}</span> / <span class="text-red-500">{{ trade.sl|floatformat:1 }}</span>
                                         </td>
                                         
                                         <!--<td class="{% if trade.side == 'BUY' %}text-primary{% else %}text-red-500{% endif %} font-bold">
@@ -218,7 +216,7 @@
                                         <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Stop Loss</label>
     
                                         <div class="relative">
-                                            <input class="w-full bg-background-dark border border-surface-border rounded-lg py-2 pl-3 pr-8 text-white font-mono text-sm focus:ring-1 focus:ring-primary focus:border-primary transition-all" type="number" value="2.5"/>
+                                            <input id = "stop-loss" class="w-full bg-background-dark border border-surface-border rounded-lg py-2 pl-3 pr-8 text-white font-mono text-sm focus:ring-1 focus:ring-primary focus:border-primary transition-all" type="number" value="2.5"/>
     
                                             <span class="absolute right-3 top-2 text-slate-500 font-mono text-xs">%</span>
                                         </div>
@@ -228,7 +226,7 @@
                                         <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Take Profit</label>
     
                                         <div class="relative">
-                                            <input class="w-full bg-background-dark border border-surface-border rounded-lg py-2 pl-3 pr-8 text-white font-mono 
+                                            <input id = "take-profit" class="w-full bg-background-dark border border-surface-border rounded-lg py-2 pl-3 pr-8 text-white font-mono 
                                             text-sm focus:ring-1 focus:ring-primary focus:border-primary transition-all" type="number" value="5.0"/>
     
                                             <span class="absolute right-3 top-2 text-slate-500 font-mono text-xs">%</span>
@@ -513,17 +511,16 @@
                 row.innerHTML = `
                     <td class="px-5 py-4 flex items-center gap-2">
                         <div class="size-6 rounded-full bg-orange-500 flex items-center justify-center text-[10px] font-bold text-white">₿</div>
-                        <span class="font-bold">BTCUSDT</span>
+                        <span class="font-bold">${(trade.symbol || 0)}</span>
                     </td>
                     <td class="px-5 py-4 text-slate-400">${(trade.quantity || 0).toFixed(4)}</td>
                     <td class="px-5 py-4 text-slate-400">$${(trade.entry_price || 0).toFixed(2)}</td>
                     <td class="px-5 py-4 text-slate-400">$${(trade.current_price || 0).toFixed(1)}</td>
-                    <td>
-                        <span class="px-5 py-4 text-green">${(trade.tp || 0).toFixed(1)}</span> / 
-                        <span class="px-5 py-4 text-red">${(trade.sl || 0).toFixed(1)}</span>
+                    <td class="px-5 py-4">
+                        <span class="text-primary">${(trade.tp || 0).toFixed(1)}</span> / <span class="text-red-500">${(trade.sl || 0).toFixed(1)}</span>
                     </td>
                     <td class="px-5 py-4 text-center">
-                        <span class="${trade.side === 'BUY' ? 'text-primary bg-primary/10' : 'text-red-500 bg-red-500'} px-3 py-1 rounded-full text-xs font-bold tracking-wide">${(trade.side || 'UNK').toUpperCase()}</span>
+                        <span class="${pnlClass} px-3 py-1 rounded-full text-xs font-bold tracking-wide">${(trade.side || 'UNK').toUpperCase()}</span>
                     </td>
                     <td class="px-5 py-4 text-right ${pnlClass} font-bold">
                         ${(trade.unrealized_pnl_usdt || 0).toFixed(2)} USDT <br>
@@ -555,6 +552,7 @@
                 tradeDiv.innerHTML = `
                     <div class="flex justify-between items-start mb-1">
                         <span class="font-bold text-sm text-slate-200">${trade.symbol || 'UNK'}</span>
+                        <span class="font-bold text-sm text-slate-200">${trade.side || 'UNK'}</span>
                         <span class="font-mono text-sm font-bold ${ (trade.pl_in_dollar || 0) >= 0 ? 'text-primary' : 'text-red-500' }">${(trade.pl_in_dollar || 0).toFixed(2)} $</span>
                     </div>
                     <div class="flex justify-between items-center text-xs text-slate-500 font-mono">
@@ -620,6 +618,8 @@
             try {
                 // Collect values from input fields
                 const settings = {
+                    stop_loss: parseFloat(document.getElementById('stop-loss').value) / 100, // Convert % to decimal
+                    take_profit: parseFloat(document.getElementById('take-profit').value) / 100, // Convert % to decimal
                     confidence_trade: parseFloat(document.getElementById('confidence-trade').value) / 100, // Convert % to decimal
                     confidence_test: parseFloat(document.getElementById('confidence-test').value) / 100,   // Convert % to decimal
                     max_risk: parseFloat(document.getElementById('max-risk').value) / 100,               // Convert % to decimal
@@ -631,6 +631,8 @@
 
                 // Validate inputs
                 if (settings.confidence_trade < 0 || settings.confidence_trade > 1 ||
+                    settings.stop_loss < 0 || settings.stop_loss > 1 ||
+                    settings.take_profit < 0 || settings.take_profit > 1 ||
                     settings.confidence_test < 0 || settings.confidence_test > 1 ||
                     settings.max_risk < 0 || settings.max_risk > 1 ||
                     settings.max_leverage < 1 || settings.max_leverage > 125 ||

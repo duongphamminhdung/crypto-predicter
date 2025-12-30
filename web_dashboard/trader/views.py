@@ -18,6 +18,7 @@ from .twitter_service import TwitterService
 
 logger = logging.getLogger(__name__)
 ngrok_api_url = 'https://plumbaginaceous-mabelle-unelaborately.ngrok-free.dev/'  # Replace with your actual Colab ngrok URL
+SYMBOLCOIN = "BTC_USDT"
 
 @csrf_exempt
 @require_POST
@@ -91,7 +92,7 @@ def update_trading_params(request):
         settings = data.get('settings', data)  # Handle both nested and direct formats
 
         # Validate required parameters
-        required_params = ['confidence_trade', 'confidence_test', 'max_risk', 'max_leverage', 'max_time_red', 'opposite_signal', 'retrain_interval']
+        required_params = ['stop_loss', 'take_profit', 'confidence_trade', 'confidence_test', 'max_risk', 'max_leverage', 'max_time_red', 'opposite_signal', 'retrain_interval']
         for param in required_params:
             if param not in settings:
                 return JsonResponse({
@@ -137,6 +138,7 @@ def update_trading_params(request):
 def get_trading_data_api(request):
     """API endpoint to get real-time trading data for frontend updates"""
     trading_data = get_trading_data()
+    global SYMBOLCOIN
     
     if trading_data:
         trades_history = trading_data.get('trades_history', [])
@@ -148,15 +150,16 @@ def get_trading_data_api(request):
         try:
             # MEXC Futures Ticker
             url = "https://contract.mexc.com/api/v1/contract/ticker"
-            params = {'symbol': 'BTC_USDT'}
+            params = {'symbol': SYMBOLCOIN}
             r = requests.get(url, params=params, timeout=3)
+            print(r.json())
             if r.status_code == 200:
                 data = r.json()
                 if data['success'] and data['data']:
                     current_price = float(data['data']['lastPrice'])
         except Exception as e:
             logger.error(f"Error fetching price: {e}")
-
+        print(f"Current Price: {current_price}")
         # Calculate P&L for active trades
         if current_price > 0:
             for trade in trading_data.get('active_trades', []):
@@ -174,16 +177,18 @@ def get_trading_data_api(request):
                             pnl = (entry - current_price) * qty
                             pnl_pct = ((entry - current_price) / entry) * 100
                         
+                        trade['symbol'] = SYMBOLCOIN
                         trade['unrealized_pnl_usdt'] = pnl
                         trade['unrealized_pnl_percentage'] = pnl_pct
                     else:
+                        trade['symbol'] = SYMBOLCOIN
                         trade['unrealized_pnl_usdt'] = 0
                         trade['unrealized_pnl_percentage'] = 0
                 except Exception as e:
                     logger.error(f"Error calculating P&L: {e}")
 
         context = {
-            'trades_history': trades_history,
+            'trades_history': trades_history[0:17],
             'active_trades': active_trades,
             'daily_stats': daily_stats,
         }
