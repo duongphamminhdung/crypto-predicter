@@ -220,6 +220,37 @@ def get_trading_data():
         logger.error(f"Error calling Colab trading data API: {e}")
         return None
 
+@csrf_exempt
+@require_POST
+def update_active_symbol(request):
+    target_url = ngrok_api_url + '/update-active-symbol'
+
+    try:
+        data = json.loads(request.body)
+        new_symbol = data.get('symbol')
+        
+        response = requests.post(target_url, json=new_symbol, timeout=10)
+
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('success'):
+                return JsonResponse({
+                    'success': True,
+                    'message': 'Symbol parameters updated successfully in Colab'
+                })
+            else:
+                return JsonResponse({
+                    'success': False,
+                    'message': result.get('message', 'Failed to update parameters in Colab')
+                })
+        else:
+            return JsonResponse({
+                'success': False,
+                'message': f'Colab API error: {response.status_code}'
+            })
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+
 def get_news(request):
     # 1. Check the URL being used
     # Ensure 'ngrok_api_url' is defined globally or imported!

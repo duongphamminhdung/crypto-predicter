@@ -99,29 +99,102 @@
                                 <span class="material-symbols-outlined text-primary">candlestick_chart</span>
                                 Live Market Data
                             </h3>
+
+                            <div class="flex items-center gap-2">
+                                <div class="relative">
+                                    <input 
+                                        type="text" 
+                                        id="symbol-input" 
+                                        class="bg-background-dark border border-surface-border rounded-lg py-1.5 pl-3 pr-8 text-white font-mono text-xs focus:ring-1 focus:ring-primary focus:border-primary transition-all uppercase placeholder-slate-500" 
+                                        placeholder="BTCUSDT" 
+                                        value="BTCUSDT"
+                                    />
+                                    <span class="absolute right-2 top-1.5 text-slate-500 material-symbols-outlined text-[16px]">search</span>
+                                </div>
+                                <button 
+                                    onclick="changeSymbol()" 
+                                    class="bg-surface-border hover:bg-slate-700 text-white text-xs font-bold py-1.5 px-3 rounded-lg transition-colors">
+                                    LOAD
+                                </button>
+                            </div>
                         </div>
     
                         <div class="w-full aspect-[16/9] bg-[#131722] rounded-xl border border-surface-border relative overflow-hidden group">
-    
                             <!-- TradingView Widget BEGIN -->
                             <div class="tradingview-widget-container" style="height:100%;width:100%">
                                 <div id="tradingview_chart" style="height:100%;width:100%"></div>
                                 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
                                 <script type="text/javascript">
-                                new TradingView.widget(
-                                {
-                                "autosize": true,
-                                "symbol": "MEXC:BTCUSDT.P",
-                                "interval": "1",
-                                "timezone": "Etc/UTC",
-                                "theme": "dark",
-                                "style": "1",
-                                "locale": "en",
-                                "enable_publishing": false,
-                                "allow_symbol_change": true,
-                                "container_id": "tradingview_chart"
-                                }
-                                );
+                                    // 1. Global variable to track the current symbol
+                                    let currentSymbol = "MEXC:BTCUSDT.P"; 
+
+                                    // 2. Function to load/reload the widget
+                                    function loadChart(symbol) {
+                                        new TradingView.widget({
+                                            "autosize": true,
+                                            "symbol": symbol, // Use the variable here
+                                            "interval": "1",
+                                            "timezone": "Etc/UTC",
+                                            "theme": "dark",
+                                            "style": "1",
+                                            "locale": "en",
+                                            "enable_publishing": false,
+                                            "allow_symbol_change": false, // Disable internal change to force user to use our input
+                                            "container_id": "tradingview_chart",
+                                            "hide_side_toolbar": false
+                                        });
+                                    }
+
+                                    // 3. Function called when user clicks "LOAD"
+                                    async function changeSymbol() {
+                                        const input = document.getElementById('symbol-input');
+                                        let rawSymbol = input.value.toUpperCase().trim();
+
+                                        if (!rawSymbol) return;
+
+                                        // Format for MEXC (Optional: adjust logic if you trade other exchanges)
+                                        // If user types "ETH", we assume "MEXC:ETHUSDT.P"
+                                        if (!rawSymbol.includes(':')) {
+                                            // Heuristic: If it doesn't have USDT, add it
+                                            if (!rawSymbol.includes('USDT')) rawSymbol += 'USDT';
+                                            // Prefix with Exchange and Suffix with Perp (.P) if needed
+                                            currentSymbol = `MEXC:${rawSymbol}.P`; 
+                                        } else {
+                                            currentSymbol = rawSymbol;
+                                        }
+
+                                        console.log("Processing Symbol Change:", currentSymbol);
+
+                                        // A. Send to Backend
+                                        try {
+                                            // NOTE: You need to create this URL in your urls.py!
+                                            const response = await fetch('/update-active-symbol/', {
+                                                method: 'POST',
+                                                headers: {
+                                                    'Content-Type': 'application/json',
+                                                    'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]')?.value || ''
+                                                },
+                                                body: JSON.stringify({ symbol: rawSymbol })
+                                            });
+                                            
+                                            const data = await response.json();
+                                            if(data.success) {
+                                                showNotification(`Bot target updated to ${rawSymbol}`, 'success');
+                                            } else {
+                                                showNotification('Bot update failed, but chart loading...', 'error');
+                                            }
+
+                                        } catch (error) {
+                                            console.error("Backend error:", error);
+                                        }
+
+                                        // B. Reload the Chart
+                                        loadChart(currentSymbol);
+                                    }
+
+                                    document.addEventListener('DOMContentLoaded', function() {
+                                        loadChart(currentSymbol);
+                                    });
                                 </script>
                             </div>
                             <!-- TradingView Widget END -->
