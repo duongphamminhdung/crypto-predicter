@@ -208,6 +208,36 @@ stop_bot() {
     fi
 }
 
+refresh_sentiment() {
+    local script_path="./news/test_backend.py"
+
+    echo ""
+    echo "--- 🚀 Refreshing Sentiment Data ---"
+
+    check_python
+
+    # 1. Check if the file actually exists
+    if [ ! -f "$script_path" ]; then
+        echo "❌ Error: File not found."
+        echo "   Please check the path."
+        return 1
+    fi
+
+    # 2. Run the script using Python
+    # We use 'python3' to be explicit, though 'python' usually works too
+    $PYTHON_CMD "$script_path"
+
+    # Capture the exit code of the python script (0 = success, anything else = error)
+    local exit_code=$?
+
+    # 3. Report the result
+    if [ $exit_code -eq 0 ]; then
+        echo "✅ Execution finished successfully."
+    else
+        echo "🔥 Script crashed with exit code: $exit_code"
+    fi
+    echo "------------------------------------"
+}
 
 # Function to clean up generated files
 clean() {
@@ -277,7 +307,7 @@ show_help() {
     echo "  train      - Train the initial model (required before starting bot)"
     echo "  start      - Start the live trading bot"
     echo "  stop         - Stop the running trading bot"
-    echo "  clear-stop   - Clear the stop flag (allows bot to restart)"
+    echo "  sentiment    - Refresh sentiment data from news sources"
     echo "  logs       - View the last 50 lines of bot logs"
     echo "  stats      - View current trading statistics"
     echo "  clean      - Remove all generated files (models, data, logs)"
@@ -289,6 +319,7 @@ show_help() {
     echo "  ./run.sh start      # Start trading"
     echo "  ./run.sh stop         # Stop the bot"
     echo "  ./run.sh logs       # Check what's happening"
+    echo "  ./run.sh sentiment  # Refresh sentiment data"
     echo ""
     echo "Quick Start:"
     echo "  1. ./run.sh install"
@@ -310,6 +341,9 @@ case "${1:-help}" in
         ;;
     stop)
         stop_bot
+        ;;
+    sentiment)
+        refresh_sentiment
         ;;
     logs)
         view_logs

@@ -14,7 +14,6 @@ import joblib
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from .twitter_service import TwitterService
 
 logger = logging.getLogger(__name__)
 ngrok_api_url = 'https://plumbaginaceous-mabelle-unelaborately.ngrok-free.dev/'  # Replace with your actual Colab ngrok URL
@@ -221,130 +220,67 @@ def get_trading_data():
         logger.error(f"Error calling Colab trading data API: {e}")
         return None
 
+def get_news(request):
+    # 1. Check the URL being used
+    # Ensure 'ngrok_api_url' is defined globally or imported!
+    target_url = ngrok_api_url + '/sentiment_data'
+    
+    try:
+        response = requests.get(target_url, timeout=30)
+        
+        # 2. Check if it's the Ngrok Warning Page
+        if "ngrok-skip-browser-warning" in response.text:
+            print("❌ Error: Ngrok 'Browser Warning' page detected!")
+            print("   Fix: Add headers={'ngrok-skip-browser-warning': 'true'} to requests.get()")
+        
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                if data.get('success'):
+                    return JsonResponse({'success': True, 'sentiment_data': data.get('sentiment_data', {})})
+                else:
+                    print(f"⚠️ API returned 200 but success=False: {data}")
+            except Exception as e:
+                print(f"❌ JSON Decode Error: {e}")
+                print(f"   Raw Content (First 100 chars): {response.text[:100]}")
+        else:
+            print(f"❌ Failed Response Content: {response.text[:200]}")
+
+        # If we got here, something failed
+        return JsonResponse({'success': False, 'error': f'Failed with status {response.status_code}'}, status=500)
+
+    except Exception as e:
+        print(f"🔥 CRASH: {e}")
+        return JsonResponse({'success': False, 'error': str(e)}, status=500)
+    
+def get_news_data():
+    """Fetch sentiment news data from Colab"""
+    try:
+        # IMPORTANT: Replace with your actual Colab ngrok URL!
+        colab_api_url = ngrok_api_url + '/sentiment_data'
+
+        response = requests.get(colab_api_url, timeout=30)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('success'):
+                return data.get('sentiment_data', {})
+        
+        logger.error(f"Colab sentiment data API call failed")
+        return None
+    except Exception as e:
+        logger.error(f"Error calling Colab sentiment data API: {e}")
+        return None
+
 def dashboard(request):
     # Get ALL data from Colab instead of local JSON files
     trading_data = get_trading_data()
-    
-    if trading_data:
-        trades_history = trading_data.get('trades_history', [])
-        active_trades = trading_data.get('active_trades', [])
-        daily_stats = trading_data.get('daily_stats', {})
-    else:
-        # Fallback to local files if Colab API fails
-        trades_history = []
-        active_trades = []
-        daily_stats = {}
-        
-        # [Keep the existing local file reading code here as fallback]
-        base_dir = settings.BASE_DIR.parent
-        trades_log_path = os.path.join(base_dir, 'trades_log.json')
-        current_trades_path = os.path.join(base_dir, 'current_trades.json')
-        stats_path = os.path.join(base_dir, 'trading_stats.json')
+    news = get_news_data()
 
-        # Read Trades Log
-        if os.path.exists(trades_log_path):
-            try:
-                with open(trades_log_path, 'r') as f:
-                    content = f.read().strip()
-                    if content and content != 'w':
-                        raw_history = json.loads(content)
-                        # Clean keys for Django template
-                        for t in raw_history:
-                            trades_history.append({
-                                'time_stamp': t.get('time_stamp'),
-                                'entry_price': t.get('entry price'),
-                                'profit_loss_result': t.get('Profit/loss'),
-                                'pl_percentage': t.get('PL percentage'),
-                                'pl_in_dollar': t.get('PL in $'),
-                                'side': 'UNK' # Side not currently saved in log
-                            })
-                        
-                        # Reverse to show newest first
-                        if isinstance(trades_history, list):
-                            trades_history.reverse()
-            except Exception as e:
-                print(f"Error reading trades log: {e}")
-
-        # Read Active Trades
-        if os.path.exists(current_trades_path):
-            try:
-                with open(current_trades_path, 'r') as f:
-                    content = f.read().strip()
-                    if content and content != 'w':
-                        data = json.loads(content)
-                        # Combine active and simulated
-                        active_trades = data.get('active_trades', [])
-                        simulated_trades = data.get('simulated_trades', [])
-                        
-                        # Add a flag to distinguish them
-                        for t in active_trades: t['is_simulated'] = False
-                        for t in simulated_trades: t['is_simulated'] = True
-                        
-                        active_trades.extend(simulated_trades)
-            except Exception as e:
-                print(f"Error reading active trades: {e}")
-
-        # Read Stats
-        if os.path.exists(stats_path):
-            try:
-                with open(stats_path, 'r') as f:
-                    content = f.read().strip()
-                    if content:
-                        daily_stats = json.loads(content)
-            except Exception as e:
-                print(f"Error reading stats: {e}")
-
-    # Fetch Current Price for PnL Calculation
-    current_price = 0
-    try:
-        # MEXC Futures Ticker
-        url = "https://contract.mexc.com/api/v1/contract/ticker"
-        params = {'symbol': 'BTC_USDT'}
-        r = requests.get(url, params=params, timeout=3)
-        if r.status_code == 200:
-            data = r.json()
-            if data['success'] and data['data']:
-                current_price = float(data['data']['lastPrice'])
-    except Exception as e:
-        print(f"Error fetching price: {e}")
-
-    # Calculate PnL if we have price and trades
-    if current_price > 0:
-        for trade in active_trades:
-            try:
-                entry = float(trade.get('entry_price', 0))
-                qty = float(trade.get('quantity', 0))
-                side = trade.get('side', 'BUY')
-                trade['current_price'] = current_price
-                
-                if entry > 0:
-                    if side == 'BUY':
-                        pnl = (current_price - entry) * qty
-                        pnl_pct = ((current_price - entry) / entry) * 100
-                    else: # SELL
-                        pnl = (entry - current_price) * qty
-                        pnl_pct = ((entry - current_price) / entry) * 100
-                    
-                    trade['unrealized_pnl_usdt'] = pnl
-                    trade['unrealized_pnl_percentage'] = pnl_pct
-                else:
-                    trade['unrealized_pnl_usdt'] = 0
-                    trade['unrealized_pnl_percentage'] = 0
-            except Exception as e:
-                 print(f"Error calc pnl: {e}")
-
-    # STEP 7: Fetch Twitter News
-    twitter_service = TwitterService()
-    twitter_news = twitter_service.fetch_crypto_news(max_results=8)
-    
-    # Add sentiment to each tweet
-    for tweet in twitter_news:
-        tweet['sentiment'] = twitter_service.get_sentiment(tweet['text'])
-    
     context = {
-        'trades_history': trades_history,
-        'active_trades': active_trades,
-        'daily_stats': daily_stats,
-        'twitter_news': twitter_news,  # Add this line
+        'trades_history': trading_data.get('trades_history', [])[0:17],
+        'active_trades': trading_data.get('active_trades', []),
+        'daily_stats': trading_data.get('daily_stats', {}),
+        'sentiment_data': news
     }
+
     return render(request, 'trader/code.html', context)

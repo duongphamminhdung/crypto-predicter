@@ -1,6 +1,10 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
-  content: ["./*.html"],
+  content: [
+    "./*.html",
+    "./**/*.html",  // <--- The ** tells it to look in ALL subfolders
+    "./**/*.js"
+  ],
   darkMode: "class",
   theme: {
     extend: {

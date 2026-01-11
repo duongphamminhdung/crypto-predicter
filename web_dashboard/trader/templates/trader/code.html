@@ -26,38 +26,71 @@
         <main class="flex-grow p-4 md:p-6 lg:p-8">
             <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
                 <section class="lg:col-span-3 flex flex-col gap-5 h-full">
-                    <div class="flex items-center gap-2 mb-1">
-                        <span class="material-symbols-outlined text-accent-blue">psychology</span>
-                        <h3 class="text-white text-base font-bold tracking-tight">Crypto News</h3>
+                    <div class="flex flex-col gap-4">
+                        <div class="flex items-center gap-2 mb-1">
+                            <span class="material-symbols-outlined text-accent-blue">psychology</span>
+                            <h3 class="text-white text-base font-bold tracking-tight">Market Sentiment Engine</h3>
+                        </div>
+                        <div class="flex p-1 space-x-1 bg-surface-dark border border-surface-border rounded-xl" role="tablist">
+                            <button id = "xbutton" aria-selected="true" class="flex-1 py-2 px-3 text-xs font-bold text-center text-white bg-slate-700/50 rounded-lg shadow-sm focus:outline-none" role="tab">Twitter News</button>
+                            <button id = "newsbutton" aria-selected="false" class="flex-1 py-2 px-3 text-xs font-bold text-center text-slate-400 hover:text-white rounded-lg focus:outline-none transition-colors" role="tab">Internet Articles</button>
+                        </div>
+                    </div>
+                    <div class="flex flex-col gap-4 overflow-y-auto max-h-[calc(100vh-180px)] pr-2" style = "display:flex" id="twitter-content">
+                        {% for article in sentiment_data.tweets %}
+                        <div class="p-4 rounded-xl bg-surface-dark border border-surface-border hover:border-surface-border/80 transition-all">
+                            <div class="flex items-center gap-3 mb-3">
+                                <div class="bg-center bg-no-repeat bg-cover rounded-full size-10" style='background-image: url({{article.author_image}});'></div>
+                                <div>
+                                    <p class="text-slate-200 text-sm font-semibold leading-tight">{{article.author_name}}</p>
+                                    <p class="text-slate-500 text-xs">@{{article.author_handle}}</p>
+                                </div>
+                                <span class="ml-auto text-xs text-slate-500 font-mono">{{article.date}}</span>
+                            </div>
+
+                            <p class="text-slate-300 text-sm leading-relaxed mb-3">
+                                {{article.text}}
+                            </p>
+                            <div class="flex items-center gap-2 {% if article.sentiment == 'Positive' %} bg-primary/10 border border-primary/20 {% else %} {% if article.sentiment == 'Neutral' %} bg-accent-blue border border-accent-blue {% else %} bg-red-500 border border-red-500 {% endif %} {% endif %} rounded-full px-3 py-1.5 w-max">
+                                <span class="material-symbols-outlined {% if article.sentiment == 'Positive' %} text-primary {% else %} {% if article.sentiment == 'Neutral' %} text-accent-blue {% else %} text-red-500 {% endif %} {% endif %} text-[16px]">
+                                    {% if article.sentiment == 'Positive' %} trending_up {% else %} {% if article.sentiment == 'Neutral' %} verified {% else %} trending_down {% endif %} {% endif %}                                   
+                                </span>
+                                <span class="{% if article.sentiment == 'Positive' %} text-primary {% else %} {% if article.sentiment == 'Neutral' %} text-accent-blue {% else %} text-red-500 {% endif %} {% endif %} text-xs font-bold tracking-wide font-mono">
+                                    {{article.sentiment}}: {{article.impact}} ({{article.score}})
+                                </span>
+                            </div>
+                        </div>
+                        {% empty %}
+                            <div class="p-3 text-center text-slate-400">No news articles available</div>
+                        {% endfor %}
                     </div>
 
-                    <div class="flex flex-col gap-4 overflow-y-auto max-h-[calc(100vh-140px)] pr-2">
-                        {% if twitter_news %}
-                            {% for tweet in twitter_news %}
-                                <div class="p-4 rounded-xl bg-surface-dark border border-surface-border hover:border-surface-border/80 transition-all">
-                                    <div class="flex items-center gap-3 mb-3">
-                                        <div class="bg-center bg-no-repeat bg-cover rounded-full size-10" style='background-image: url("{{ tweet.author_image }}");'></div>
-                                        <div>
-                                            <p class="text-slate-200 text-sm font-semibold leading-tight">{{ tweet.author_name }}</p>
-                                            <p class="text-slate-500 text-xs">@{{ tweet.author_username }}</p>
-                                        </div>
-                                    </div>
-                                    <p class="text-slate-300 text-sm leading-relaxed mb-3">
-                                        {{ tweet.text }}
-                                    </p>
-                                    <div class="sentiment-badge sentiment-{{ tweet.sentiment }}">
-                                        {{ tweet.sentiment|upper }}
-                                    </div>
-                                </div>
-                            {% endfor %}
-                        {% else %}
-                            <div class="p-4 text-center text-slate-400">
-                                <p>📡 Loading crypto news...</p>
-                                <p class="text-xs mt-2 text-slate-500">Check API connection</p>
+                    <div class="flex flex-col gap-4 overflow-y-auto max-h-[calc(100vh-180px)] pr-2" style = "display:none" id="articles-content">
+                        {% for article in sentiment_data.news %}
+                        <div class="p-4 rounded-xl bg-surface-dark border border-surface-border hover:border-surface-border/80 transition-all">
+                            <div class="flex items-center gap-3 mb-3">
+                                <div class="bg-center bg-no-repeat bg-cover rounded-full size-10" style='background-image: url({{article.favicon}});'></div>
+                                <div class="text-slate-200 text-sm font-semibold leading-tight">{{article.source}}</div>
+                                <span class="ml-auto text-xs text-slate-500 font-mono">{{article.date_display}}</span>
                             </div>
-                        {% endif %}
+
+                            <p class="text-slate-300 text-sm leading-relaxed mb-3">
+                                {{article.text}}
+                            </p>
+                            <div class="flex items-center gap-2 {% if article.sentiment == 'Positive' %} bg-primary/10 border border-primary/20 {% else %} {% if article.sentiment == 'Neutral' %} bg-accent-blue border border-accent-blue {% else %} bg-red-500 border border-red-500 {% endif %} {% endif %} rounded-full px-3 py-1.5 w-max">
+                                <span class="material-symbols-outlined {% if article.sentiment == 'Positive' %} text-primary {% else %} {% if article.sentiment == 'Neutral' %} text-accent-blue {% else %} text-red-500 {% endif %} {% endif %} text-[16px]">
+                                    {% if article.sentiment == 'Positive' %} trending_up {% else %} {% if article.sentiment == 'Neutral' %} verified {% else %} trending_down {% endif %} {% endif %}                                   
+                                </span>
+                                <span class="{% if article.sentiment == 'Positive' %} text-primary {% else %} {% if article.sentiment == 'Neutral' %} text-accent-blue {% else %} text-red-500 {% endif %} {% endif %} text-xs font-bold tracking-wide font-mono">
+                                    {{article.sentiment}}: {{article.impact}} ({{article.score}})
+                                </span>
+                            </div>
+                        </div>
+                        {% empty %}
+                            <div class="p-3 text-center text-slate-400">No news articles available</div>
+                        {% endfor %}
                     </div>
-                </section>
+                    </section>
     
                 <section class="lg:col-span-6 flex flex-col gap-6">
                     <div class="flex flex-col gap-3">
@@ -148,7 +181,7 @@
                         </div>
                     </div>
     
-                    <div class="mt-auto bg-surface-dark rounded-xl border border-surface-border p-6 shadow-lg">
+                    <div class="bg-surface-dark rounded-xl border border-surface-border p-6 shadow-lg">
                         <div class="flex items-center justify-between mb-6 pb-4 border-b border-surface-border/50">
                             <h3 class="text-white text-base font-bold tracking-tight">Bot Control Panel</h3>
     
@@ -325,13 +358,13 @@
                         </div>
                     </div>
     
-                    <div class="flex flex-col flex-1 h-full min-h-[300px]">
+                    <div class="flex flex-col h-full min-h-[300px]">
                         <div class="flex items-center gap-2 mb-3">
                             <span class="material-symbols-outlined text-slate-400">history</span>
                             <h3 class="text-white text-base font-bold tracking-tight">Trade History</h3>
                         </div>
     
-                        <div class="bg-surface-dark rounded-xl border border-surface-border flex-1 overflow-hidden flex flex-col">
+                        <div class="bg-surface-dark rounded-xl border border-surface-border overflow-hidden flex flex-col">
                             <div id="trade-history-container" class="overflow-y-auto p-2">
                                 {% for trade in trades_history %}
                                 <div class="p-3 border-b border-surface-border/50 last:border-0 hover:bg-white/5 transition-colors rounded-lg cursor-default">
@@ -447,9 +480,9 @@
             } catch (error) {
                 console.error('Error refreshing status:', error);
             }
-        }, 30000);
+        }, 60000);
 
-        // Auto-refresh trading data every 30 seconds
+        // Auto-refresh trading data  and news every 30 seconds
         setInterval(async function() {
             try {
                 const response = await fetch('/api/trading-data/');
@@ -462,7 +495,124 @@
             } catch (error) {
                 console.error('Error refreshing trading data:', error);
             }
-        }, 30000);
+
+            try {
+                const response = await fetch('/sentiment_data/');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success) {
+                        updateSentimentData(data.sentiment_data);
+                    }
+                }
+            } catch (error) {
+                console.error('Error refreshing sentiment data:', error);
+            }
+        }, 60000);
+
+        const xbutton = document.getElementById('xbutton'),
+            newsbutton = document.getElementById('newsbutton'),
+            twitterContent = document.getElementById('twitter-content'),
+            articlesContent = document.getElementById('articles-content');
+
+        // 1. Helper: Show Element (Force CSS display: flex)
+        function showElement(el) {
+            el.style.display = 'flex'; 
+        }
+
+        // 2. Helper: Hide Element (Force CSS display: none)
+        function hideElement(el) {
+            el.style.display = 'none'; 
+        }
+
+        // 1. Twitter Button Logic
+        xbutton.onclick = function() {
+            // Style Buttons
+            xbutton.classList.add('bg-slate-700/50', 'text-white', 'shadow-sm');
+            xbutton.classList.remove('text-slate-400');
+            newsbutton.classList.remove('bg-slate-700/50', 'text-white', 'shadow-sm');
+            newsbutton.classList.add('text-slate-400');
+
+            // Logic: Show Twitter, Hide Articles
+            showElement(twitterContent);
+            hideElement(articlesContent);
+        };
+
+        // 2. News Button Logic
+        newsbutton.onclick = function() {
+            // Style Buttons
+            newsbutton.classList.add('bg-slate-700/50', 'text-white', 'shadow-sm');
+            newsbutton.classList.remove('text-slate-400');
+            xbutton.classList.remove('bg-slate-700/50', 'text-white', 'shadow-sm');
+            xbutton.classList.add('text-slate-400');
+
+            // Logic: Hide Twitter, Show Articles
+            hideElement(twitterContent);
+            showElement(articlesContent);
+        };
+
+        function updateSentimentData(sentimentData) {
+            const xnews = sentimentData.tweets || 0,
+                newsArticles = sentimentData.news || 0;
+
+            twitterContent.innerHTML = '';
+            articlesContent.innerHTML = '';
+            
+            xnews.forEach(tweet => {
+                const container = document.createElement('div');
+                container.className = 'p-4 rounded-xl bg-surface-dark border border-surface-border hover:border-surface-border/80 transition-all';
+
+                container.innerHTML = `
+                    <div class="flex items-center gap-3 mb-3">
+                        <div class="bg-center bg-no-repeat bg-cover rounded-full size-10" style='background-image: url(${tweet.author_image});'></div>
+                        <div>
+                            <p class="text-slate-200 text-sm font-semibold leading-tight">${tweet.author_name}</p>
+                            <p class="text-slate-500 text-xs">@${tweet.author_handle}</p>
+                        </div>
+                        <span class="ml-auto text-xs text-slate-500 font-mono">${tweet.date}</span>
+                    </div>
+                    <p class="text-slate-300 text-sm leading-relaxed mb-3">
+                        ${tweet.text || "Error"}
+                    </p>
+                    <div class="flex items-center gap-2 ${tweet.sentiment == "Positive" ? "bg-primary/10 border border-primary/20" : (tweet.sentiment == "Neutral" ? "bg-accent-blue border border-accent-blue" : "bg-red-500 border border-red-500")} rounded-full px-3 py-1.5 w-max">
+                        <span class="material-symbols-outlined ${tweet.sentiment == "Positive" ? "text-primary" : (tweet.sentiment == "Neutral" ? "text-accent-blue" : "text-red-500")} text-[16px]">
+                            ${tweet.sentiment == "Positive" ? "trending_up" : (tweet.sentiment == "Neutral" ? "verified" : "trending_down")}
+                        </span>
+                        <span class="${tweet.sentiment == "Positive" ? "text-primary" : (tweet.sentiment == "Neutral" ? "text-accent-blue" : "text-red-500")} text-xs font-bold tracking-wide font-mono">
+                            ${tweet.sentiment}: ${tweet.impact} (${tweet.score})
+                        </span>
+                    </div>
+                `;
+
+                twitterContent.appendChild(container);
+            })
+
+            newsArticles.forEach(tweet => {
+                const container = document.createElement('div');
+                container.className = 'p-4 rounded-xl bg-surface-dark border border-surface-border hover:border-surface-border/80 transition-all';
+
+                container.innerHTML = `
+                    <div class="flex items-center gap-3 mb-3">
+                        <div class="bg-center bg-no-repeat bg-cover rounded-full size-10" style='background-image: url(${tweet.favicon});'></div>
+                        <div class="text-slate-200 text-sm font-semibold leading-tight">${tweet.source}</div>
+                        <span class="ml-auto text-xs text-slate-500 font-mono">${tweet.date_display}</span>
+                    </div>
+
+                    <p class="text-slate-300 text-sm leading-relaxed mb-3">
+                        ${tweet.text || "Error"}
+                    </p>
+                    <div class="flex items-center gap-2 ${tweet.sentiment == "Positive" ? "bg-primary/10 border border-primary/20" : (tweet.sentiment == "Neutral" ? "bg-accent-blue border border-accent-blue" : "bg-red-500 border border-red-500")} rounded-full px-3 py-1.5 w-max">
+                        <span class="material-symbols-outlined ${tweet.sentiment == "Positive" ? "text-primary" : (tweet.sentiment == "Neutral" ? "text-accent-blue" : "text-red-500")} text-[16px]">
+                            ${tweet.sentiment == "Positive" ? "trending_up" : (tweet.sentiment == "Neutral" ? "verified" : "trending_down")}
+                        </span>
+                        <span class="${tweet.sentiment == "Positive" ? "text-primary" : (tweet.sentiment == "Neutral" ? "text-accent-blue" : "text-red-500")} text-xs font-bold tracking-wide font-mono">
+                            ${tweet.sentiment}: ${tweet.impact} (${tweet.score})
+                        </span>
+                    </div>
+                `;
+
+                articlesContent.appendChild(container);
+            })
+        }
 
         function updateTradingData(tradingData) {
             // Update active trades table

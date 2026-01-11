@@ -1,0 +1,12 @@
+{
+  "devDependencies": {
+    "@tailwindcss/container-queries": "^0.1.1",
+    "@tailwindcss/forms": "^0.5.11",
+    "autoprefixer": "^10.4.23",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.18"
+  },
+  "scripts": {
+    "watch": "tailwindcss --config ./static/trader/tailwind.config.js -i ./static/trader/input.css -o ./static/trader/output.css --watch"
+  }
+}

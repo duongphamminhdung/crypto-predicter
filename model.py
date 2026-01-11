@@ -82,8 +82,8 @@ class CryptoPredicter(nn.Module):
     4. Better handling of temporal patterns through positional encoding
     """
     def __init__(self, input_size=93, d_model=128, nhead=8, num_layers=4, 
-                 dim_feedforward=512, dropout=0.2, max_seq_len=5000,
-                 hidden_layer_size=None, **kwargs):
+                 dim_feedforward=512, dropout=0.25, max_seq_len=5000,
+                 hidden_layer_size=None, use_dropout_inference=True, **kwargs):
         """
         Transformer-based crypto predictor initialization.
         
@@ -96,6 +96,7 @@ class CryptoPredicter(nn.Module):
             dropout: Dropout rate
             max_seq_len: Maximum sequence length for positional encoding
             hidden_layer_size: (deprecated) For backward compatibility, ignored
+            use_dropout_inference: If True, applies dropout during inference for uncertainty estimation
             **kwargs: Additional arguments for backward compatibility
         """ 
         super().__init__()
@@ -107,6 +108,7 @@ class CryptoPredicter(nn.Module):
         
         self.d_model = d_model
         self.input_size = input_size
+        self.use_dropout_inference = use_dropout_inference
         
         # Input projection: map features to model dimension
         self.input_projection = nn.Linear(input_size, d_model)
@@ -127,13 +129,19 @@ class CryptoPredicter(nn.Module):
             nn.Linear(d_model, 1)
         )
         
-        # Output heads
+        # Output heads with temperature scaling for better calibration
         self.signal_head = nn.Linear(d_model, 2)  # 0: sell, 1: buy
         self.tp_head = nn.Linear(d_model, 1)
         self.sl_head = nn.Linear(d_model, 1)
         
+        # Temperature parameter for confidence calibration (learnable)
+        self.temperature = nn.Parameter(torch.ones(1) * 1.5)
+        
         # Additional dropout for regularization
         self.dropout_layer = nn.Dropout(dropout)
+        
+        # Store dropout rate for verification
+        self.dropout_rate = dropout
         
         # Time decay factor for pooling attention (bias toward recent timesteps)
         self.time_decay_alpha = 3.0
@@ -188,23 +196,33 @@ class CryptoPredicter(nn.Module):
         # Weighted sum to get final representation
         pooled_output = torch.sum(transformer_out * attention_weights, dim=1)  # (batch, d_model)
         
+        # Apply dropout before output heads for MC dropout variation
+        pooled_output = self.dropout_layer(pooled_output)
+        
         # Generate predictions from pooled representation
         signal_logits = self.signal_head(pooled_output)
         take_profit = self.tp_head(pooled_output)
         stop_loss = self.sl_head(pooled_output)
         
-        return F.softmax(signal_logits, dim=1), take_profit, stop_loss
+        # Apply temperature scaling for better calibration
+        # Higher temperature -> softer probabilities, lower confidence
+        scaled_logits = signal_logits / self.temperature
+        
+        return F.softmax(scaled_logits, dim=1), take_profit, stop_loss
 
-    def train_model(self, X_train, y_train_signal, y_train_tp, y_train_sl, epochs=10, lr=0.001, time_weighted=True):
+    def train_model(self, X_train, y_train_signal, y_train_tp, y_train_sl, epochs=10, lr=0.001, time_weighted=True, batch_size=32, label_smoothing=0.1):
         """
-        Train the model with optional time-weighted loss.
+        Train the model with optional time-weighted loss and batch training.
         
         Args:
             time_weighted: If True, recent samples get higher weight (exponential decay from most recent)
+            batch_size: Number of samples per batch for more stable training
+            label_smoothing: Label smoothing factor to prevent overconfidence (0.0 to 0.5)
         """
-        signal_loss_func = nn.CrossEntropyLoss(reduction='none')  # Changed to 'none' for manual weighting
+        # Use label smoothing to prevent overconfidence
+        signal_loss_func = nn.CrossEntropyLoss(reduction='none', label_smoothing=label_smoothing)
         price_loss_func  = nn.MSELoss(reduction='none')
-        optimizer        = torch.optim.Adam(self.parameters(), lr=lr)
+        optimizer        = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=1e-5)  # Add L2 regularization
         
         # Calculate time weights if enabled
         if time_weighted:
@@ -220,46 +238,133 @@ class CryptoPredicter(nn.Module):
         else:
             time_weights = torch.ones(len(X_train)).to(self.device)
 
+        print(f"🎯 Training with batch_size={batch_size}, label_smoothing={label_smoothing}")
+        
         for i in range(epochs):
+            self.train()  # Ensure model is in training mode
             total_loss = 0
-            for j in range(len(X_train)):
+            num_batches = 0
+            
+            # Shuffle indices for each epoch
+            indices = torch.randperm(len(X_train))
+            
+            # Process in batches
+            for start_idx in range(0, len(X_train), batch_size):
+                end_idx = min(start_idx + batch_size, len(X_train))
+                batch_indices = indices[start_idx:end_idx]
+                
                 optimizer.zero_grad()
 
-                # Move training data to the device
-                seq = X_train[j].unsqueeze(0).to(self.device)
+                # Move batch to device
+                seq_batch = X_train[batch_indices].to(self.device)
+                signal_target_batch = y_train_signal[batch_indices].to(self.device)
+                tp_target_batch = y_train_tp[batch_indices].to(self.device)
+                sl_target_batch = y_train_sl[batch_indices].to(self.device)
                 
-                signal_pred, tp_pred, sl_pred = self(seq)
+                # Forward pass
+                signal_pred, tp_pred, sl_pred = self(seq_batch)
                 
-                # And the labels
-                signal_target = y_train_signal[j].unsqueeze(0).to(self.device)
-                tp_target = y_train_tp[j].to(self.device)
-                sl_target = y_train_sl[j].to(self.device)
-
-                # Calculate losses (per-sample)
-                signal_loss = signal_loss_func(signal_pred, signal_target)
-                tp_loss = price_loss_func(tp_pred, tp_target.unsqueeze(0))  # Match dimensions
-                sl_loss = price_loss_func(sl_pred, sl_target.unsqueeze(0))  # Match dimensions
+                # Calculate losses
+                signal_loss = signal_loss_func(signal_pred, signal_target_batch)
+                tp_loss = price_loss_func(tp_pred.squeeze(), tp_target_batch.squeeze())
+                sl_loss = price_loss_func(sl_pred.squeeze(), sl_target_batch.squeeze())
                 
-                # Apply time weight to this sample
-                weight = time_weights[j]
-                weighted_loss = weight * (signal_loss.mean() + tp_loss.mean() + sl_loss.mean())
+                # Apply time weights to batch
+                batch_weights = time_weights[batch_indices]
+                weighted_signal_loss = (signal_loss * batch_weights).mean()
+                weighted_tp_loss = (tp_loss * batch_weights).mean()
+                weighted_sl_loss = (sl_loss * batch_weights).mean()
+                
+                # Total weighted loss
+                weighted_loss = weighted_signal_loss + weighted_tp_loss + weighted_sl_loss
                 
                 weighted_loss.backward()
+                
+                # Gradient clipping to prevent exploding gradients
+                torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
+                
                 optimizer.step()
                 
                 total_loss += weighted_loss.item()
+                num_batches += 1
 
             if (i+1) % 1 == 0:
-                avg_loss   = total_loss / len(X_train)
+                avg_loss = total_loss / num_batches
                 print(f'epoch: {i+1:3} loss: {avg_loss:10.8f}')
     
-    def predict(self, X_test):
-        self.eval()
-        with torch.no_grad():
-            # 4. Move prediction data to the device
-            X_test = X_test.to(self.device)
-            signal_probs, tp_pred, sl_pred = self(X_test)
-            return torch.argmax(signal_probs, dim=1), signal_probs, tp_pred, sl_pred
+    def predict(self, X_test, mc_samples=10):
+        """
+        Predict with Monte Carlo dropout for uncertainty estimation.
+        
+        Args:
+            X_test: Input tensor
+            mc_samples: Number of forward passes with dropout enabled for uncertainty estimation
+        
+        Returns:
+            predictions: Argmax of averaged probabilities
+            signal_probs: Mean probabilities across MC samples
+            tp_pred: Mean TP prediction
+            sl_pred: Mean SL prediction
+            uncertainty: Standard deviation of probabilities (uncertainty measure)
+        """
+        # Move prediction data to the device
+        X_test = X_test.to(self.device)
+        
+        if self.use_dropout_inference and mc_samples > 1:
+            # Monte Carlo Dropout: Keep dropout enabled during inference
+            # to get uncertainty estimates
+            self.train()  # Enable dropout - CRITICAL: this enables dropout layers
+            
+            # Verify dropout is enabled
+            if not self.training:
+                import warnings
+                warnings.warn("Model is not in training mode! MC dropout may not work correctly.")
+            
+            all_signal_probs = []
+            all_tp_preds = []
+            all_sl_preds = []
+            
+            with torch.no_grad():
+                for i in range(mc_samples):
+                    signal_probs, tp_pred, sl_pred = self(X_test)
+                    all_signal_probs.append(signal_probs)
+                    all_tp_preds.append(tp_pred)
+                    all_sl_preds.append(sl_pred)
+            
+            # Average predictions across MC samples
+            signal_probs_stacked = torch.stack(all_signal_probs)
+            mean_signal_probs = signal_probs_stacked.mean(dim=0)
+            uncertainty = signal_probs_stacked.std(dim=0)  # Uncertainty estimate
+            
+            # Diagnostic: Check if MC dropout is creating variation
+            max_probs_per_sample = signal_probs_stacked.max(dim=-1)[0]  # Max prob for each sample
+            prob_variance = max_probs_per_sample.var().item()
+            
+            # Log warning if variance is too low (MC dropout not working)
+            if prob_variance < 1e-6:
+                import warnings
+                warnings.warn(f"MC Dropout Warning: Very low variance ({prob_variance:.2e}) across {mc_samples} samples. "
+                            f"Dropout may not be active. Check model.training={self.training}, "
+                            f"use_dropout_inference={self.use_dropout_inference}")
+            
+            mean_tp_pred = torch.stack(all_tp_preds).mean(dim=0)
+            mean_sl_pred = torch.stack(all_sl_preds).mean(dim=0)
+            
+            predictions = torch.argmax(mean_signal_probs, dim=1)
+            
+            # Reset to eval mode after MC sampling
+            self.eval()
+            
+            return predictions, mean_signal_probs, mean_tp_pred, mean_sl_pred, uncertainty
+        else:
+            # Standard prediction without dropout
+            self.eval()
+            with torch.no_grad():
+                signal_probs, tp_pred, sl_pred = self(X_test)
+                predictions = torch.argmax(signal_probs, dim=1)
+                # Return zero uncertainty when not using MC dropout
+                uncertainty = torch.zeros_like(signal_probs)
+                return predictions, signal_probs, tp_pred, sl_pred, uncertainty
 
     def save_model(self, filepath='crypto_predicter_model.pth'):
         torch.save(self.state_dict(), filepath)

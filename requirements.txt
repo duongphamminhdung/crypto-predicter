@@ -9,3 +9,7 @@ google-api-python-client
 google-auth-oauthlib
 google-auth-httplib2
 flask
+feedparser
+flask-cors
+pyngrok
+groq

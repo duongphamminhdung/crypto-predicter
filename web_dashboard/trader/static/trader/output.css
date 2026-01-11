@@ -1064,6 +1064,14 @@ select {
   border-color: rgb(48 232 122 / 0.5);
 }
 
+.border-red-500 {
+  border-color: rgba(253, 52, 52, 0.5);
+}
+
+.border-accent-blue {
+  border-color: rgb(33 75 141 / 0.5)
+}
+
 .border-surface-border {
   --tw-border-opacity: 1;
   border-color: rgb(51 65 85 / var(--tw-border-opacity, 1));
@@ -1099,6 +1107,11 @@ select {
 
 .bg-red-500 {
   background-color: rgba(232, 48, 48, 0.1);
+}
+
+.bg-accent-blue {
+  --tw-bg-opacity: 1;
+  background-color: rgb(59 130 246 / var(--tw-bg-opacity, 1));
 }
 
 .bg-primary {
